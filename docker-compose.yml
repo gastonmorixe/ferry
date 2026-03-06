@@ -1,0 +1,44 @@
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./tunnels/providers/cloudflare/config.yml:/etc/cloudflared/config.yml:ro
+      - ${HOME}/.cloudflared/${TUNNEL_ID}.json:/etc/cloudflared/credentials.json:ro
+    dns:
+      - 172.17.0.1
+    networks:
+      - webserver
+    restart: unless-stopped
+    depends_on:
+      dokku:
+        condition: service_started
+
+  dokku:
+    image: dokku/dokku:0.37.6
+    container_name: dokku
+    hostname: ${DOKKU_HOSTNAME:-apps.local}
+    environment:
+      DOKKU_HOSTNAME: ${DOKKU_HOSTNAME:-apps.local}
+      DOKKU_HOST_ROOT: /var/lib/dokku/home/dokku
+      DOKKU_LIB_HOST_ROOT: /var/lib/dokku/var/lib/dokku
+    ports:
+      - "3022:22"
+    volumes:
+      - dokku-data:/mnt/dokku
+      - /var/run/docker.sock:/var/run/docker.sock
+    dns:
+      - 172.17.0.1
+    networks:
+      - webserver
+    restart: unless-stopped
+
+networks:
+  webserver:
+    name: webserver
+    driver: bridge
+
+volumes:
+  dokku-data:
+    name: dokku-data

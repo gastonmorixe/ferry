@@ -1,0 +1,2541 @@
+#!/usr/bin/env bash
+#
+# ferry — Deploy web apps via Dokku + Cloudflare Tunnel
+#
+# https://github.com/gastonmorixe/ferry-cli
+#
+set -euo pipefail
+
+FERRY_VERSION="0.5.0"
+FERRY_REPO="https://github.com/gastonmorixe/ferry-cli"
+
+###############################################################################
+# Constants & Config
+###############################################################################
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+CONFIG_FILE="$SCRIPT_DIR/tunnels/providers/cloudflare/config.yml"
+ENV_FILE="$SCRIPT_DIR/.env"
+CERT_DIR="$SCRIPT_DIR/tunnels/providers/cloudflare"
+
+###############################################################################
+# Terminal Capabilities
+###############################################################################
+
+# Detect color tier: 256 → 16 → none
+_COLOR_TIER=0
+if [[ -t 1 ]]; then
+    _num_colors=$(tput colors 2>/dev/null || echo 0)
+    if ((_num_colors >= 256)); then
+        _COLOR_TIER=256
+    elif ((_num_colors >= 8)); then
+        _COLOR_TIER=16
+    fi
+fi
+
+# TTY detection (for interactive features)
+_IS_TTY=false
+[[ -t 0 ]] && _IS_TTY=true
+
+# Terminal width
+_term_width() { tput cols 2>/dev/null || echo 80; }
+
+# --- 256-color palette (muted, modern) ---
+if ((_COLOR_TIER >= 256)); then
+    C_SUCCESS='\033[38;5;108m'    # sage green
+    C_ERROR='\033[38;5;167m'      # muted red
+    C_WARN='\033[38;5;179m'       # warm amber
+    C_INFO='\033[38;5;110m'       # steel blue
+    C_ACCENT='\033[38;5;139m'     # soft purple
+    C_CHROME='\033[38;5;240m'     # dark gray — borders
+    C_DIM='\033[38;5;245m'        # mid gray — secondary text
+    C_WHITE='\033[38;5;252m'      # soft white — primary text
+    C_BOLD='\033[1m'
+    C_RESET='\033[0m'
+elif ((_COLOR_TIER >= 16)); then
+    C_SUCCESS='\033[0;32m'
+    C_ERROR='\033[0;31m'
+    C_WARN='\033[1;33m'
+    C_INFO='\033[0;34m'
+    C_ACCENT='\033[0;35m'
+    C_CHROME='\033[2m'
+    C_DIM='\033[2m'
+    C_WHITE='\033[0m'
+    C_BOLD='\033[1m'
+    C_RESET='\033[0m'
+else
+    C_SUCCESS='' C_ERROR='' C_WARN='' C_INFO=''
+    C_ACCENT='' C_CHROME='' C_DIM='' C_WHITE=''
+    C_BOLD='' C_RESET=''
+fi
+
+
+ferry_intro() {
+    local _date
+    _date=$(date '+%Y-%m-%d %H:%M %z')
+    if ((_COLOR_TIER >= 256)); then
+        echo -e "  ${C_INFO}⛵${C_RESET} ${C_BOLD}${C_WHITE}ferry${C_RESET} ${C_DIM}v${FERRY_VERSION}${C_RESET}"
+        echo -e "  ${C_DIM}${_date}  ·  ${SCRIPT_DIR}${C_RESET}"
+    elif ((_COLOR_TIER >= 16)); then
+        echo -e "  ${C_BOLD}ferry${C_RESET} ${C_DIM}v${FERRY_VERSION}${C_RESET}"
+        echo -e "  ${C_DIM}${_date}${C_RESET}"
+    else
+        echo "  ferry v${FERRY_VERSION}"
+        echo "  ${_date}"
+    fi
+}
+
+# Load .env
+if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
+fi
+
+TUNNEL_ID="${TUNNEL_ID:-}"
+CF_API_TOKEN="${CF_API_TOKEN:-}"
+CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-}"
+DOKKU_HOSTNAME="${DOKKU_HOSTNAME:-}"
+
+YES=false
+_AUTH_CHECKED=false
+
+###############################################################################
+# Helpers
+###############################################################################
+
+info()    { echo -e "  ${C_INFO}·${C_RESET} $*"; }
+success() { echo -e "  ${C_SUCCESS}✓${C_RESET} $*"; }
+warn()    { echo -e "  ${C_WARN}!${C_RESET} $*"; }
+error()   { echo -e "  ${C_ERROR}✗${C_RESET} $*"; }
+dim()     { echo -e "  ${C_DIM}$*${C_RESET}"; }
+step()    { echo -e "  ${C_ACCENT}[$1]${C_RESET} $2"; }
+header()  { echo ""; echo -e "  ${C_BOLD}${C_WHITE}$*${C_RESET}"; }
+
+section_header() {
+    local title="$1"
+    local w
+    w=$(_term_width)
+    local line_len=$((w - ${#title} - 4))
+    ((line_len < 4)) && line_len=4
+    local line
+    line=$(printf '─%.0s' $(seq 1 "$line_len"))
+    echo ""
+    echo -e "  ${C_BOLD}${C_WHITE}${title}${C_RESET} ${C_CHROME}${line}${C_RESET}"
+}
+
+kv() {
+    local key="$1" value="$2" indent="${3:-4}"
+    local pad
+    pad=$(printf '%*s' "$indent" '')
+    printf '%s%b%-18s%b %s\n' "$pad" "$C_DIM" "$key" "$C_RESET" "$value"
+}
+
+kv_color() {
+    local key="$1" value="$2" color="$3" indent="${4:-4}"
+    local pad
+    pad=$(printf '%*s' "$indent" '')
+    printf '%s%b%-18s%b %b%s%b\n' "$pad" "$C_DIM" "$key" "$C_RESET" "$color" "$value" "$C_RESET"
+}
+
+box() {
+    local lines=()
+    if [[ $# -gt 0 ]]; then
+        lines=("$@")
+    else
+        while IFS= read -r line; do lines+=("$line"); done
+    fi
+
+    local max_len=0
+    for line in "${lines[@]}"; do
+        local stripped
+        stripped=$(echo -e "$line" | sed 's/\x1b\[[0-9;]*m//g')
+        (( ${#stripped} > max_len )) && max_len=${#stripped}
+    done
+    (( max_len < 30 )) && max_len=30
+
+    local border
+    border=$(printf '─%.0s' $(seq 1 $((max_len + 2))))
+
+    echo -e "  ${C_CHROME}╭${border}╮${C_RESET}"
+    for line in "${lines[@]}"; do
+        local stripped
+        stripped=$(echo -e "$line" | sed 's/\x1b\[[0-9;]*m//g')
+        local pad_len=$((max_len - ${#stripped}))
+        local pad=""
+        ((pad_len > 0)) && pad=$(printf '%*s' "$pad_len" '')
+        echo -e "  ${C_CHROME}│${C_RESET} ${line}${pad} ${C_CHROME}│${C_RESET}"
+    done
+    echo -e "  ${C_CHROME}╰${border}╯${C_RESET}"
+}
+
+prompt() {
+    local label="$1" default="${2:-}"
+    if [[ -n "$default" ]]; then
+        echo -en "  ${C_DIM}${label}${C_RESET} ${C_DIM}[${default}]${C_RESET} ${C_ACCENT}❯${C_RESET} "
+    else
+        echo -en "  ${C_DIM}${label}${C_RESET} ${C_ACCENT}❯${C_RESET} "
+    fi
+}
+
+confirm() {
+    local msg="${1:-Continue?}"
+    if $YES; then return 0; fi
+    if ! $_IS_TTY; then return 1; fi
+    echo -en "  ${C_WARN}${msg}${C_RESET} ${C_DIM}[${C_RESET}${C_BOLD}y${C_RESET}${C_DIM}/${C_RESET}N${C_DIM}]${C_RESET} ${C_ACCENT}❯${C_RESET} "
+    read -r reply
+    [[ "$reply" =~ ^[Yy]$ ]]
+}
+
+confirm_name() {
+    local name="$1"
+    if $YES; then return 0; fi
+    if ! $_IS_TTY; then return 1; fi
+    echo ""
+    echo -e "  ${C_ERROR}Type '${C_BOLD}${name}${C_RESET}${C_ERROR}' to confirm:${C_RESET}"
+    echo -en "  ${C_ACCENT}❯${C_RESET} "
+    read -r reply
+    [[ "$reply" == "$name" ]]
+}
+
+dokku_cmd() {
+    docker compose -f "$COMPOSE_FILE" exec -T dokku dokku "$@" 2>&1 </dev/null
+}
+
+###############################################################################
+# Cloudflare Auth
+###############################################################################
+
+# Token creation URL
+CF_TOKEN_URL="https://dash.cloudflare.com/profile/api-tokens"
+
+env_set() {
+    # Set a key=value in .env, creating or updating as needed
+    local key="$1" value="$2"
+    if [[ -f "$ENV_FILE" ]] && grep -q "^${key}=" "$ENV_FILE"; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+    else
+        echo "${key}=${value}" >> "$ENV_FILE"
+    fi
+    # Also export for current session
+    export "$key=$value"
+}
+
+cf_token_verify() {
+    # Verify the current CF_API_TOKEN. Returns 0 if valid.
+    # Sets _cf_token_status to: "valid", "invalid", "expired", or "missing"
+    # Tries /user/tokens/verify first (user tokens), then falls back to
+    # /accounts/{id}/tokens/verify (account tokens).
+    if [[ -z "$CF_API_TOKEN" ]]; then
+        _cf_token_status="missing"
+        return 1
+    fi
+
+    local resp
+    # Try user token endpoint first
+    resp=$(cf_api GET "/user/tokens/verify" 2>/dev/null) || true
+
+    # If user endpoint fails and we have an account ID, try account endpoint
+    if ! cf_api_ok "$resp" 2>/dev/null; then
+        if [[ -n "$CF_ACCOUNT_ID" ]]; then
+            resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/tokens/verify" 2>/dev/null) || true
+        else
+            # No account ID yet — try to discover it to test account token
+            local acct_resp acct_id
+            acct_resp=$(cf_api GET "/accounts?page=1&per_page=1" 2>/dev/null) || true
+            acct_id=$(echo "$acct_resp" | jq -r '.result[0].id // empty' 2>/dev/null) || true
+            if [[ -n "$acct_id" ]]; then
+                resp=$(cf_api GET "/accounts/${acct_id}/tokens/verify" 2>/dev/null) || true
+            fi
+        fi
+    fi
+
+    if cf_api_ok "$resp" 2>/dev/null; then
+        local status_val
+        status_val=$(echo "$resp" | jq -r '.result.status // "unknown"')
+        if [[ "$status_val" == "active" ]]; then
+            _cf_token_status="valid"
+            return 0
+        elif [[ "$status_val" == "expired" ]]; then
+            _cf_token_status="expired"
+            return 1
+        else
+            _cf_token_status="invalid"
+            return 1
+        fi
+    else
+        # Last resort: try listing zones — if it works, the token is valid
+        local zones_resp
+        zones_resp=$(cf_api GET "/zones?per_page=1" 2>/dev/null) || true
+        if cf_api_ok "$zones_resp" 2>/dev/null; then
+            _cf_token_status="valid"
+            return 0
+        fi
+        _cf_token_status="invalid"
+        return 1
+    fi
+}
+
+cf_discover_account_id() {
+    # Auto-discover and cache the Cloudflare account ID from the API token
+    if [[ -n "$CF_ACCOUNT_ID" ]]; then
+        echo "$CF_ACCOUNT_ID"
+        return 0
+    fi
+
+    local account_id="" account_name=""
+
+    # Try /accounts endpoint first
+    local resp
+    resp=$(cf_api GET "/accounts?page=1&per_page=1" 2>/dev/null) || true
+    if cf_api_ok "$resp" 2>/dev/null; then
+        account_id=$(echo "$resp" | jq -r '.result[0].id // empty')
+        account_name=$(echo "$resp" | jq -r '.result[0].name // empty')
+    fi
+
+    # Fallback: extract account from zones response
+    if [[ -z "$account_id" ]]; then
+        resp=$(cf_api GET "/zones?per_page=1" 2>/dev/null) || true
+        if cf_api_ok "$resp" 2>/dev/null; then
+            account_id=$(echo "$resp" | jq -r '.result[0].account.id // empty')
+            account_name=$(echo "$resp" | jq -r '.result[0].account.name // empty')
+        fi
+    fi
+
+    if [[ -n "$account_id" ]]; then
+        CF_ACCOUNT_ID="$account_id"
+        env_set "CF_ACCOUNT_ID" "$account_id"
+        info "Discovered account: $account_name ($account_id)"
+        echo "$account_id"
+        return 0
+    fi
+
+    return 1
+}
+
+cf_check_permissions() {
+    # Test what the current token can do. Prints a report.
+    # Returns 0 if all critical permissions pass, 1 if any critical ones fail.
+    local all_ok=true
+
+    # Test 1: List zones (Zone:Read)
+    local zones_resp zones_ok=false zone_count=0
+    zones_resp=$(cf_api GET "/zones?per_page=50" 2>/dev/null) || true
+    if cf_api_ok "$zones_resp" 2>/dev/null; then
+        zone_count=$(echo "$zones_resp" | jq -r '.result_info.total_count // 0')
+        zones_ok=true
+    fi
+    if $zones_ok; then
+        echo -e "    ${C_SUCCESS}✓${C_RESET} Zone:Read          — $zone_count zone(s) accessible"
+    else
+        echo -e "    ${C_ERROR}✗${C_RESET} Zone:Read          — cannot list zones"
+        all_ok=false
+    fi
+
+    # Test 2: DNS (try reading records from first zone)
+    local dns_ok=false
+    if $zones_ok && ((zone_count > 0)); then
+        local first_zone_id first_zone_name
+        first_zone_id=$(echo "$zones_resp" | jq -r '.result[0].id')
+        first_zone_name=$(echo "$zones_resp" | jq -r '.result[0].name')
+        local dns_resp
+        dns_resp=$(cf_api GET "/zones/${first_zone_id}/dns_records?per_page=1" 2>/dev/null) || true
+        if cf_api_ok "$dns_resp" 2>/dev/null; then
+            dns_ok=true
+        fi
+    fi
+    if $dns_ok; then
+        echo -e "    ${C_SUCCESS}✓${C_RESET} DNS:Edit           — can manage DNS records"
+    else
+        echo -e "    ${C_ERROR}✗${C_RESET} DNS:Edit           — cannot access DNS records"
+        all_ok=false
+    fi
+
+    # Test 3: Tunnels (Account:Cloudflare Tunnel:Read)
+    local tunnel_ok=false
+    if [[ -n "$CF_ACCOUNT_ID" ]]; then
+        local tunnel_resp
+        tunnel_resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?per_page=1" 2>/dev/null) || true
+        if cf_api_ok "$tunnel_resp" 2>/dev/null; then
+            tunnel_ok=true
+        fi
+    fi
+    if $tunnel_ok; then
+        echo -e "    ${C_SUCCESS}✓${C_RESET} Tunnel:Read        — can list tunnels"
+    else
+        echo -e "    ${C_WARN}~${C_RESET} Tunnel:Read        — not available (optional)"
+    fi
+
+    # List accessible zones
+    if $zones_ok && ((zone_count > 0)); then
+        echo ""
+        echo -e "    ${C_BOLD}${C_WHITE}Accessible zones:${C_RESET}"
+        echo "$zones_resp" | jq -r '.result[] | "      " + .name + " (" + .status + ")"'
+    fi
+
+    $all_ok
+}
+
+cert_find_for_hostname() {
+    # Given a hostname, walk up domain labels to find a matching zone cert.
+    # Prints "<path> <zone>" on stdout if found, returns 1 if not.
+    # Example: app.example.com -> checks example.com.cert -> com.cert
+    local hostname="$1"
+    local domain="$hostname"
+
+    while [[ "$domain" == *.* ]]; do
+        # Strip leftmost label
+        domain="${domain#*.}"
+        local cert_path="${CERT_DIR}/${domain}.cert"
+        if [[ -f "$cert_path" ]]; then
+            echo "$cert_path $domain"
+            return 0
+        fi
+    done
+    return 1
+}
+
+cert_list_zones() {
+    # List all available zone names from cert files
+    local cert_file
+    for cert_file in "$CERT_DIR"/*.cert; do
+        [[ -f "$cert_file" ]] || continue
+        local basename
+        basename=$(basename "$cert_file" .cert)
+        echo "$basename"
+    done
+}
+
+cert_check_all() {
+    # Report all zone certs (replaces cert_check_all)
+    local found=false
+    local cert_file
+    for cert_file in "$CERT_DIR"/*.cert; do
+        [[ -f "$cert_file" ]] || continue
+        found=true
+        local zone
+        zone=$(basename "$cert_file" .cert)
+        echo -e "    ${C_WARN}Zone cert: ${zone}${C_RESET} ${C_DIM}(fallback for *.${zone} subdomains)${C_RESET}"
+    done
+    if ! $found; then
+        echo -e "    ${C_DIM}No zone certs found (not needed if API token is configured)${C_RESET}"
+        return 1
+    fi
+    return 0
+}
+
+cf_auth_check() {
+    # Startup auth banner — clear about implications.
+    # Non-blocking: warns but does not exit.
+
+    if [[ -z "$CF_API_TOKEN" ]]; then
+        echo ""
+        box "${C_ERROR}${C_BOLD}Cloudflare API not configured${C_RESET}" \
+            "" \
+            "  Without it, you cannot:" \
+            "    ${C_ERROR}✗${C_RESET} Deploy to domains without a zone cert" \
+            "    ${C_ERROR}✗${C_RESET} Auto-create or delete DNS records" \
+            "    ${C_ERROR}✗${C_RESET} Manage multiple Cloudflare zones" \
+            "" \
+            "  Run ${C_ACCENT}ferry login${C_RESET} to set up."
+        echo ""
+        return 1
+    fi
+
+    # Token exists — quick verify (silent on success)
+    if ! cf_token_verify; then
+        echo ""
+        case "$_cf_token_status" in
+            expired)
+                box "${C_ERROR}${C_BOLD}API token has expired${C_RESET}" \
+                    "" \
+                    "  DNS operations will fail." \
+                    "  Run ${C_ACCENT}ferry login${C_RESET} to fix."
+                ;;
+            *)
+                box "${C_ERROR}${C_BOLD}API token is invalid${C_RESET}" \
+                    "" \
+                    "  DNS operations will fail." \
+                    "  Run ${C_ACCENT}ferry login${C_RESET} to fix."
+                ;;
+        esac
+        echo ""
+        return 1
+    fi
+
+    # Valid token — auto-discover account ID silently
+    if [[ -z "$CF_ACCOUNT_ID" ]]; then
+        cf_discover_account_id >/dev/null 2>&1 || true
+    fi
+
+    return 0
+}
+
+cf_require_auth() {
+    # Hard gate: requires valid API auth. Offers to run login if missing.
+    # Use this before operations that NEED the API (DNS create/delete).
+    local context="${1:-This operation}"
+
+    if [[ -z "$CF_API_TOKEN" ]] || ! cf_token_verify; then
+        echo ""
+        error "${context} requires a valid Cloudflare API token."
+        echo ""
+        if confirm "Run login setup now?"; then
+            cmd_login
+            # Re-check after login
+            if [[ -z "$CF_API_TOKEN" ]] || ! cf_token_verify; then
+                error "Still not authenticated. Cannot proceed."
+                return 1
+            fi
+            success "Authenticated! Continuing..."
+            echo ""
+            return 0
+        else
+            return 1
+        fi
+    fi
+    return 0
+}
+
+###############################################################################
+# Spinner
+###############################################################################
+
+_SPINNER_PID=""
+_SPINNER_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+
+spinner_start() {
+    local msg="${1:-}"
+    # Non-interactive: just print the message
+    if ! $_IS_TTY || ((_COLOR_TIER == 0)); then
+        [[ -n "$msg" ]] && info "$msg"
+        return
+    fi
+
+    (
+        local i=0
+        while true; do
+            printf '\r  %b%s%b %s' "$C_ACCENT" "${_SPINNER_FRAMES[$((i % 10))]}" "$C_RESET" "$msg"
+            ((i++)) || true
+            sleep 0.08
+        done
+    ) &
+    _SPINNER_PID=$!
+    disown "$_SPINNER_PID" 2>/dev/null || true
+}
+
+spinner_stop() {
+    local status="${1:-success}" msg="${2:-}"
+    if [[ -n "$_SPINNER_PID" ]]; then
+        kill "$_SPINNER_PID" 2>/dev/null || true
+        wait "$_SPINNER_PID" 2>/dev/null || true
+        _SPINNER_PID=""
+        printf '\r\033[2K'
+    fi
+    case "$status" in
+        success) [[ -n "$msg" ]] && success "$msg" ;;
+        error)   [[ -n "$msg" ]] && error "$msg" ;;
+        warn)    [[ -n "$msg" ]] && warn "$msg" ;;
+    esac
+}
+
+###############################################################################
+# Ctrl+C Trap
+###############################################################################
+
+cleanup() {
+    # Kill any running spinner
+    if [[ -n "$_SPINNER_PID" ]]; then
+        kill "$_SPINNER_PID" 2>/dev/null || true
+        wait "$_SPINNER_PID" 2>/dev/null || true
+        _SPINNER_PID=""
+        printf '\r\033[2K'
+    fi
+    tput cnorm 2>/dev/null || true
+    echo ""
+    warn "Interrupted! Operation may be incomplete."
+    if [[ -f "${CONFIG_FILE}.bak" ]]; then
+        warn "A backup of config.yml exists at: ${CONFIG_FILE}.bak"
+        warn "To restore: cp ${CONFIG_FILE}.bak ${CONFIG_FILE}"
+    fi
+    exit 130
+}
+
+trap cleanup INT TERM
+
+###############################################################################
+# Config Generation
+###############################################################################
+
+_generate_default_config() {
+    # Generate a minimal cloudflared config.yml from TUNNEL_ID
+    if [[ -z "$TUNNEL_ID" ]]; then
+        error "TUNNEL_ID not set — cannot generate config.yml"
+        return 1
+    fi
+
+    python3 - "$CONFIG_FILE" "$TUNNEL_ID" <<'PYEOF'
+import sys, yaml, os
+
+config_path = sys.argv[1]
+tunnel_id = sys.argv[2]
+
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+
+cfg = {
+    "tunnel": tunnel_id,
+    "credentials-file": "/etc/cloudflared/credentials.json",
+    "ingress": [
+        {"service": "http_status:404"}
+    ]
+}
+
+with open(config_path, "w") as f:
+    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+print("ok")
+PYEOF
+}
+
+###############################################################################
+# Preflight Checks
+###############################################################################
+
+preflight() {
+    local errors=0
+
+    if ! command -v docker &>/dev/null; then
+        error "docker not found"
+        ((errors++)) || true
+    fi
+
+    if ! docker info &>/dev/null; then
+        error "Docker daemon not running or permission denied"
+        ((errors++)) || true
+    fi
+
+    if [[ ! -f "$COMPOSE_FILE" ]]; then
+        error "docker-compose.yml not found at $COMPOSE_FILE"
+        ((errors++)) || true
+    fi
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        if [[ -n "$TUNNEL_ID" ]]; then
+            info "config.yml not found — generating default..."
+            if _generate_default_config; then
+                success "Generated $CONFIG_FILE"
+            else
+                error "Failed to generate config.yml"
+                ((errors++)) || true
+            fi
+        else
+            error "cloudflared config.yml not found at $CONFIG_FILE"
+            ((errors++)) || true
+        fi
+    fi
+
+    if [[ -z "$TUNNEL_ID" ]]; then
+        error "TUNNEL_ID not set in $ENV_FILE"
+        ((errors++)) || true
+    fi
+
+    # Check containers are running
+    local running
+    running="$(docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}:{{.State}}' 2>/dev/null || true)"
+    if ! echo "$running" | grep -q "cloudflared:running"; then
+        error "cloudflared container is not running"
+        ((errors++)) || true
+    fi
+    if ! echo "$running" | grep -q "dokku:running"; then
+        error "dokku container is not running"
+        ((errors++)) || true
+    fi
+
+    if ((errors > 0)); then
+        error "Preflight failed with $errors error(s). Fix the above issues first."
+        return 1
+    fi
+
+    # Auth check (non-blocking — just warns, once per session)
+    if ! $_AUTH_CHECKED; then
+        cf_auth_check || true
+        _AUTH_CHECKED=true
+    fi
+}
+
+###############################################################################
+# YAML Operations (via Python3 + PyYAML)
+###############################################################################
+
+yaml_list_ingress() {
+    python3 - "$CONFIG_FILE" <<'PYEOF'
+import sys, yaml
+
+with open(sys.argv[1]) as f:
+    cfg = yaml.safe_load(f)
+
+for rule in cfg.get("ingress", []):
+    hostname = rule.get("hostname", "(catch-all)")
+    service = rule.get("service", "?")
+    print(f"{hostname}\t{service}")
+PYEOF
+}
+
+yaml_has_hostname() {
+    local hostname="$1"
+    python3 - "$CONFIG_FILE" "$hostname" <<'PYEOF'
+import sys, yaml
+
+with open(sys.argv[1]) as f:
+    cfg = yaml.safe_load(f)
+
+hostname = sys.argv[2]
+for rule in cfg.get("ingress", []):
+    if rule.get("hostname") == hostname:
+        print("yes")
+        sys.exit(0)
+print("no")
+PYEOF
+}
+
+yaml_add_ingress() {
+    local hostname="$1"
+    local service="$2"
+    python3 - "$CONFIG_FILE" "$hostname" "$service" <<'PYEOF'
+import sys, yaml, shutil
+
+config_path = sys.argv[1]
+hostname = sys.argv[2]
+service = sys.argv[3]
+
+# Backup
+shutil.copy2(config_path, config_path + ".bak")
+
+with open(config_path) as f:
+    cfg = yaml.safe_load(f)
+
+ingress = cfg.get("ingress", [])
+
+# Check duplicate
+for rule in ingress:
+    if rule.get("hostname") == hostname:
+        print(f"ERROR: hostname '{hostname}' already exists in ingress", file=sys.stderr)
+        sys.exit(1)
+
+# Insert before catch-all (last rule)
+new_rule = {"hostname": hostname, "service": service}
+if len(ingress) > 0 and "hostname" not in ingress[-1]:
+    ingress.insert(-1, new_rule)
+else:
+    ingress.append(new_rule)
+
+cfg["ingress"] = ingress
+
+with open(config_path, "w") as f:
+    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+# Validate catch-all
+with open(config_path) as f:
+    check = yaml.safe_load(f)
+last = check["ingress"][-1]
+if "hostname" in last or last.get("service") != "http_status:404":
+    # Restore backup
+    shutil.copy2(config_path + ".bak", config_path)
+    print("ERROR: catch-all rule validation failed, restored backup", file=sys.stderr)
+    sys.exit(1)
+
+print("ok")
+PYEOF
+}
+
+yaml_remove_ingress() {
+    local hostname="$1"
+    python3 - "$CONFIG_FILE" "$hostname" <<'PYEOF'
+import sys, yaml, shutil
+
+config_path = sys.argv[1]
+hostname = sys.argv[2]
+
+# Backup
+shutil.copy2(config_path, config_path + ".bak")
+
+with open(config_path) as f:
+    cfg = yaml.safe_load(f)
+
+ingress = cfg.get("ingress", [])
+new_ingress = [r for r in ingress if r.get("hostname") != hostname]
+
+if len(new_ingress) == len(ingress):
+    print(f"WARNING: hostname '{hostname}' not found in ingress", file=sys.stderr)
+    sys.exit(0)
+
+cfg["ingress"] = new_ingress
+
+with open(config_path, "w") as f:
+    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+# Validate catch-all
+with open(config_path) as f:
+    check = yaml.safe_load(f)
+last = check["ingress"][-1]
+if "hostname" in last or last.get("service") != "http_status:404":
+    shutil.copy2(config_path + ".bak", config_path)
+    print("ERROR: catch-all rule validation failed, restored backup", file=sys.stderr)
+    sys.exit(1)
+
+print("ok")
+PYEOF
+}
+
+yaml_validate() {
+    python3 - "$CONFIG_FILE" <<'PYEOF'
+import sys, yaml
+
+try:
+    with open(sys.argv[1]) as f:
+        cfg = yaml.safe_load(f)
+except Exception as e:
+    print(f"ERROR: invalid YAML: {e}", file=sys.stderr)
+    sys.exit(1)
+
+ingress = cfg.get("ingress")
+if not ingress or not isinstance(ingress, list):
+    print("ERROR: no ingress rules found", file=sys.stderr)
+    sys.exit(1)
+
+last = ingress[-1]
+if "hostname" in last:
+    print("ERROR: last ingress rule must be catch-all (no hostname)", file=sys.stderr)
+    sys.exit(1)
+
+if last.get("service") != "http_status:404":
+    print(f"ERROR: catch-all service is '{last.get('service')}', expected 'http_status:404'", file=sys.stderr)
+    sys.exit(1)
+
+print(f"ok: {len(ingress)} rules, catch-all valid")
+PYEOF
+}
+
+###############################################################################
+# Cloudflare API Operations
+###############################################################################
+
+CF_API_BASE="https://api.cloudflare.com/client/v4"
+
+# Declare associative array for zone ID caching (avoids repeated API calls)
+declare -A _zone_id_cache
+
+cf_api() {
+    # Generic Cloudflare API call helper
+    # Usage: cf_api GET "/zones" or cf_api POST "/zones/$zid/dns_records" '{"json":"body"}'
+    local method="$1" path="$2" body="${3:-}"
+
+    if [[ -z "$CF_API_TOKEN" ]]; then
+        error "CF_API_TOKEN not set in $ENV_FILE"
+        return 1
+    fi
+
+    local args=(
+        -s -X "$method"
+        --max-time 15
+        -H "Authorization: Bearer ${CF_API_TOKEN}"
+        -H "Content-Type: application/json"
+    )
+
+    if [[ -n "$body" ]]; then
+        args+=(-d "$body")
+    fi
+
+    curl "${args[@]}" "${CF_API_BASE}${path}"
+}
+
+cf_api_ok() {
+    # Check if a CF API JSON response has success=true
+    local response="$1"
+    [[ "$(echo "$response" | jq -r '.success')" == "true" ]]
+}
+
+cf_api_error() {
+    # Extract first error message from a CF API response
+    local response="$1"
+    echo "$response" | jq -r '.errors[0].message // "unknown error"'
+}
+
+cf_resolve_zone_id() {
+    # Given a hostname like "app.mydomain.com", resolve the zone_id via API.
+    # Walks up the domain labels: tries "app.mydomain.com", then "mydomain.com".
+    # Caches results in _zone_id_cache for the session.
+    local hostname="$1"
+
+    if [[ -z "$CF_API_TOKEN" ]]; then
+        return 1
+    fi
+
+    # Walk up domain labels
+    local domain="$hostname"
+    while [[ "$domain" == *.* ]]; do
+        # Check cache first
+        if [[ -n "${_zone_id_cache[$domain]:-}" ]]; then
+            echo "${_zone_id_cache[$domain]}"
+            return 0
+        fi
+
+        local response
+        response=$(cf_api GET "/zones?name=${domain}&status=active")
+
+        if cf_api_ok "$response"; then
+            local zone_id
+            zone_id=$(echo "$response" | jq -r '.result[0].id // empty')
+            if [[ -n "$zone_id" ]]; then
+                _zone_id_cache[$domain]="$zone_id"
+                echo "$zone_id"
+                return 0
+            fi
+        fi
+
+        # Strip leftmost label: app.mydomain.com -> mydomain.com
+        domain="${domain#*.}"
+    done
+
+    error "Could not find Cloudflare zone for '$hostname'"
+    return 1
+}
+
+cf_dns_create_cname() {
+    # Create a proxied CNAME record pointing hostname to the tunnel
+    local hostname="$1"
+    local tunnel_target="${TUNNEL_ID}.cfargotunnel.com"
+
+    local zone_id
+    zone_id=$(cf_resolve_zone_id "$hostname") || return 1
+
+    local body
+    body=$(jq -n \
+        --arg name "$hostname" \
+        --arg content "$tunnel_target" \
+        '{type: "CNAME", name: $name, content: $content, proxied: true, ttl: 1}')
+
+    local response
+    response=$(cf_api POST "/zones/${zone_id}/dns_records" "$body")
+
+    if cf_api_ok "$response"; then
+        return 0
+    else
+        local msg
+        msg=$(cf_api_error "$response")
+        # "Record already exists" is not an error for us
+        if [[ "$msg" == *"already exists"* ]]; then
+            return 0
+        fi
+        error "Failed to create DNS record for '$hostname': $msg"
+        return 1
+    fi
+}
+
+cf_dns_delete_record() {
+    # Delete a DNS record by hostname (finds record ID first)
+    local hostname="$1"
+
+    local zone_id
+    zone_id=$(cf_resolve_zone_id "$hostname") || return 1
+
+    local response
+    response=$(cf_api GET "/zones/${zone_id}/dns_records?type=CNAME&name=${hostname}")
+
+    if ! cf_api_ok "$response"; then
+        error "Failed to query DNS records: $(cf_api_error "$response")"
+        return 1
+    fi
+
+    local record_id
+    record_id=$(echo "$response" | jq -r '.result[0].id // empty')
+
+    if [[ -z "$record_id" ]]; then
+        warn "DNS record for '$hostname' not found (may already be deleted)"
+        return 0
+    fi
+
+    local del_response
+    del_response=$(cf_api DELETE "/zones/${zone_id}/dns_records/${record_id}")
+
+    if cf_api_ok "$del_response"; then
+        return 0
+    else
+        error "Failed to delete DNS record: $(cf_api_error "$del_response")"
+        return 1
+    fi
+}
+
+cf_dns_list_records() {
+    # List DNS records for a zone (resolved from hostname)
+    local hostname="$1"
+    local record_type="${2:-}"  # optional: CNAME, A, etc.
+
+    local zone_id
+    zone_id=$(cf_resolve_zone_id "$hostname") || return 1
+
+    local query="/zones/${zone_id}/dns_records?name=${hostname}"
+    if [[ -n "$record_type" ]]; then
+        query+="&type=${record_type}"
+    fi
+
+    cf_api GET "$query"
+}
+
+###############################################################################
+# DNS Operations
+###############################################################################
+
+dns_create_cname() {
+    local hostname="$1"
+
+    # Prefer API method (works across all zones, no cert.pem needed)
+    if [[ -n "$CF_API_TOKEN" ]]; then
+        if cf_dns_create_cname "$hostname"; then
+            echo "Added CNAME $hostname via API"
+            return 0
+        fi
+        warn "API method failed, falling back to cloudflared..."
+    fi
+
+    # Fallback: zone-scoped cert via cloudflared tunnel route dns
+    local _cert_result
+    _cert_result=$(cert_find_for_hostname "$hostname") || true
+    if [[ -z "$_cert_result" ]]; then
+        error "No CF_API_TOKEN and no zone cert found for '$hostname'"
+        error "Run ferry login to set up API access"
+        return 1
+    fi
+    local _cert_path="${_cert_result%% *}"
+    local _cert_zone="${_cert_result#* }"
+    warn "Using zone cert fallback (${_cert_zone} subdomains only)"
+    docker compose -f "$COMPOSE_FILE" run --rm -T \
+        -v "${_cert_path}:/tmp/cert.pem:ro" \
+        cloudflared --origincert /tmp/cert.pem \
+        tunnel route dns \
+        "$TUNNEL_ID" "$hostname" 2>&1
+}
+
+dns_delete_record() {
+    local hostname="$1"
+
+    if [[ -z "$CF_API_TOKEN" ]]; then
+        error "CF_API_TOKEN required for DNS record deletion"
+        return 1
+    fi
+
+    cf_dns_delete_record "$hostname"
+}
+
+dns_check() {
+    local hostname="$1"
+    dig +short "$hostname" 2>/dev/null | head -1
+}
+
+###############################################################################
+# Cloudflared Operations
+###############################################################################
+
+cloudflared_restart() {
+    info "Restarting cloudflared..."
+    docker compose -f "$COMPOSE_FILE" restart cloudflared 2>&1
+
+    local attempts=0
+    local max_attempts=5
+    while ((attempts < max_attempts)); do
+        sleep 3
+        local state
+        state=$(docker compose -f "$COMPOSE_FILE" ps --format '{{.State}}' cloudflared 2>/dev/null || true)
+        if [[ "$state" != "running" ]]; then
+            ((attempts++)) || true
+            continue
+        fi
+        # Check for at least one tunnel connection
+        local conns
+        conns=$(docker compose -f "$COMPOSE_FILE" logs --tail=10 cloudflared 2>&1 | \
+            grep -c "Registered tunnel connection" || true)
+        if ((conns > 0)); then
+            success "cloudflared restarted (${conns} connection(s) registered)"
+            return 0
+        fi
+        ((attempts++)) || true
+    done
+
+    error "cloudflared did not register tunnel connections within timeout"
+    return 1
+}
+
+cloudflared_tunnel_status() {
+    # Check recent logs for connection info
+    docker compose -f "$COMPOSE_FILE" logs --tail=50 cloudflared 2>&1 | \
+        grep -c "Registered tunnel connection" || echo "0"
+}
+
+###############################################################################
+# Dokku Operations
+###############################################################################
+
+dokku_app_exists() {
+    local name="$1"
+    dokku_cmd apps:exists "$name" &>/dev/null
+}
+
+dokku_list_apps() {
+    local output
+    output=$(dokku_cmd apps:list 2>/dev/null) || {
+        warn "Failed to list Dokku apps"
+        return 1
+    }
+    echo "$output" | tail -n +2
+}
+
+dokku_app_domains() {
+    local name="$1"
+    dokku_cmd domains:report "$name" 2>/dev/null | \
+        grep "Domains app vhosts:" | awk '{print $NF}'
+}
+
+dokku_app_ports() {
+    local name="$1"
+    dokku_cmd ports:report "$name" 2>/dev/null | \
+        grep "Ports map:" | head -1 | sed 's/.*Ports map:\s*//' | xargs
+}
+
+dokku_app_status() {
+    local name="$1"
+    local ps_output
+    ps_output=$(dokku_cmd ps:report "$name" 2>/dev/null || true)
+    if echo "$ps_output" | grep -q "Running:.*true"; then
+        echo "running"
+    elif echo "$ps_output" | grep -q "Deployed:.*false"; then
+        echo "not deployed"
+    else
+        echo "stopped"
+    fi
+}
+
+###############################################################################
+# Git & Deploy Helpers
+###############################################################################
+
+detect_app_port() {
+    # Detect the app port from project files.
+    # Prints "PORT SOURCE_DESCRIPTION" on stdout. Returns 1 if nothing detected.
+    # Priority: Dockerfile EXPOSE > package.json framework > scripts.start > Procfile
+    local dir="$1"
+
+    # 1. Dockerfile EXPOSE
+    if [[ -f "$dir/Dockerfile" ]]; then
+        local dport
+        dport=$(grep -i '^[[:space:]]*EXPOSE[[:space:]]' "$dir/Dockerfile" 2>/dev/null \
+            | head -1 | awk '{print $2}' | grep -oE '^[0-9]+') || true
+        if [[ -n "$dport" ]]; then
+            echo "$dport Dockerfile EXPOSE"
+            return 0
+        fi
+    fi
+
+    # 2. package.json — framework detection
+    if [[ -f "$dir/package.json" ]] && command -v jq &>/dev/null; then
+        local deps
+        deps=$(jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]' \
+            "$dir/package.json" 2>/dev/null) || true
+
+        local fw
+        for fw in next nuxt remix fastify express; do
+            if echo "$deps" | grep -qx "$fw"; then
+                echo "3000 ${fw} (package.json)"
+                return 0
+            fi
+        done
+
+        # 3. package.json scripts.start — port flags
+        local start_script
+        start_script=$(jq -r '.scripts.start // empty' "$dir/package.json" 2>/dev/null) || true
+        if [[ -n "$start_script" ]]; then
+            local sport
+            sport=$(echo "$start_script" \
+                | grep -oE '\-\-port[[:space:]]+[0-9]+|\-p[[:space:]]+[0-9]+' \
+                | head -1 | grep -oE '[0-9]+') || true
+            if [[ -n "$sport" ]]; then
+                echo "$sport start script (--port)"
+                return 0
+            fi
+            sport=$(echo "$start_script" | grep -oE 'PORT=[0-9]+' \
+                | head -1 | grep -oE '[0-9]+') || true
+            if [[ -n "$sport" ]]; then
+                echo "$sport start script (PORT=)"
+                return 0
+            fi
+        fi
+    fi
+
+    # 4. Procfile
+    if [[ -f "$dir/Procfile" ]]; then
+        local pport
+        pport=$(grep -oE '\-\-port[[:space:]]+[0-9]+|\-p[[:space:]]+[0-9]+' \
+            "$dir/Procfile" 2>/dev/null | head -1 | grep -oE '[0-9]+') || true
+        if [[ -n "$pport" ]]; then
+            echo "$pport Procfile (--port)"
+            return 0
+        fi
+    fi
+
+    # 5. No detection
+    return 1
+}
+
+repo_clone() {
+    # Clone a GitHub repo. Args: $1=repo slug or URL, $2=target directory.
+    # Returns 0 on success or if already cloned. Returns 1 on failure.
+    local input="$1" target_dir="$2"
+
+    # Normalize: strip https://github.com/ prefix and .git suffix
+    local slug="$input"
+    slug="${slug#https://github.com/}"
+    slug="${slug#http://github.com/}"
+    slug="${slug#github.com/}"
+    slug="${slug%.git}"
+
+    # Validate format: owner/repo
+    if ! [[ "$slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+        error "Invalid repo format '$slug'. Expected: owner/repo"
+        return 1
+    fi
+
+    # Skip if already cloned
+    if [[ -d "$target_dir/.git" ]]; then
+        info "Repository already cloned at $target_dir"
+        return 0
+    fi
+
+    # Clone (full history — Dokku needs it for buildpack detection)
+    if ! command -v gh &>/dev/null; then
+        error "gh (GitHub CLI) is required for cloning. Install: https://cli.github.com"
+        return 1
+    fi
+
+    gh repo clone "$slug" "$target_dir"
+}
+
+dokku_push() {
+    # Push app to Dokku. Args: $1=app dir, $2=app name, $3=branch (optional).
+    # Returns exit code from git push.
+    local dir="$1" name="$2" push_branch="${3:-}"
+
+    # Auto-detect branch if not specified
+    if [[ -z "$push_branch" ]]; then
+        push_branch=$(git -C "$dir" branch --show-current 2>/dev/null) || true
+        if [[ -z "$push_branch" ]]; then
+            push_branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+        fi
+        if [[ -z "$push_branch" ]] || [[ "$push_branch" == "HEAD" ]]; then
+            error "Cannot detect branch (detached HEAD?). Use --branch to specify."
+            return 1
+        fi
+    fi
+
+    local remote_url="ssh://dokku@localhost:3022/$name"
+
+    # Add or update dokku remote
+    if git -C "$dir" remote get-url dokku &>/dev/null; then
+        git -C "$dir" remote set-url dokku "$remote_url"
+    else
+        git -C "$dir" remote add dokku "$remote_url"
+    fi
+
+    info "Pushing $push_branch → dokku:master..."
+    git -C "$dir" push dokku "$push_branch:master"
+}
+
+post_deploy_verify() {
+    # Verify the app is live. Args: $1=hostname, $2=app name.
+    # Retries 5 times with 3s delay. Returns 0 on 2xx/3xx, 1 on failure.
+    local hostname="$1" name="$2"
+    local attempts=0 max_attempts=5
+
+    while ((attempts < max_attempts)); do
+        local http_code
+        http_code=$(curl -sI --max-time 10 "https://$hostname" 2>/dev/null \
+            | head -1 | awk '{print $2}') || true
+        if [[ -n "$http_code" ]] && [[ "$http_code" =~ ^[23][0-9][0-9]$ ]]; then
+            success "App is live at https://$hostname (HTTP $http_code)"
+            return 0
+        fi
+        ((attempts++)) || true
+        if ((attempts < max_attempts)); then
+            info "Waiting for app to come online... (attempt $attempts/$max_attempts)"
+            sleep 3
+        fi
+    done
+
+    warn "App not responding at https://$hostname after $max_attempts attempts"
+    warn "This is normal if the app is still building."
+    dim "    Check build progress: ferry logs $name"
+    return 1
+}
+
+###############################################################################
+# Command: status
+###############################################################################
+
+cmd_status() {
+    preflight
+
+    section_header "System Status"
+
+    # --- Infrastructure ---
+    section_header "Infrastructure"
+    echo ""
+
+    # Docker Compose services
+    local cf_status dokku_status
+    cf_status=$(docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}} ({{.Status}})' cloudflared 2>/dev/null || echo "unknown")
+    dokku_status=$(docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}} ({{.Status}})' dokku 2>/dev/null || echo "unknown")
+    kv "Docker Compose" "$cf_status | $dokku_status"
+
+    # Tunnel connections
+    local conn_count
+    conn_count=$(docker compose -f "$COMPOSE_FILE" logs --tail=100 cloudflared 2>&1 | \
+        grep -c "Registered tunnel connection" || true)
+    if ((conn_count >= 4)); then
+        kv_color "Cloudflare Tunnel" "Connected ($conn_count connections)" "$C_SUCCESS"
+    elif ((conn_count > 0)); then
+        kv_color "Cloudflare Tunnel" "Partial ($conn_count connections)" "$C_WARN"
+    else
+        kv_color "Cloudflare Tunnel" "Unknown (no connection logs)" "$C_ERROR"
+    fi
+
+    # NextDNS
+    local dns_local dns_docker
+    dns_local=$(dig +short +time=2 @127.0.0.1 cloudflare.com 2>/dev/null && echo "ok" || echo "fail")
+    dns_docker=$(dig +short +time=2 @172.17.0.1 cloudflare.com 2>/dev/null && echo "ok" || echo "fail")
+    local dns_str=""
+    if [[ "$dns_local" == *"ok"* ]]; then
+        dns_str="${C_SUCCESS}127.0.0.1 ✓${C_RESET}"
+    else
+        dns_str="${C_ERROR}127.0.0.1 ✗${C_RESET}"
+    fi
+    dns_str+="  "
+    if [[ "$dns_docker" == *"ok"* ]]; then
+        dns_str+="${C_SUCCESS}172.17.0.1 ✓${C_RESET}"
+    else
+        dns_str+="${C_ERROR}172.17.0.1 ✗${C_RESET}"
+    fi
+    printf '    %b%-18s%b ' "$C_DIM" "NextDNS" "$C_RESET"
+    echo -e "$dns_str"
+
+    # API token status
+    if [[ -n "$CF_API_TOKEN" ]]; then
+        if cf_token_verify; then
+            kv_color "Cloudflare API" "Authenticated" "$C_SUCCESS"
+            local zones_resp zone_names
+            zones_resp=$(cf_api GET "/zones?per_page=50" 2>/dev/null) || true
+            if cf_api_ok "$zones_resp" 2>/dev/null; then
+                zone_names=$(echo "$zones_resp" | jq -r '[.result[].name] | join(", ")')
+                kv "Zones" "$zone_names"
+            fi
+        else
+            printf '    %b%-18s%b ' "$C_DIM" "Cloudflare API" "$C_RESET"
+            echo -e "${C_ERROR}Token ${_cf_token_status}${C_RESET} ${C_DIM}— run${C_RESET} ${C_ACCENT}ferry login${C_RESET}"
+        fi
+    else
+        printf '    %b%-18s%b ' "$C_DIM" "Cloudflare API" "$C_RESET"
+        echo -e "${C_WARN}Not configured${C_RESET} ${C_DIM}— run${C_RESET} ${C_ACCENT}ferry login${C_RESET}"
+    fi
+
+    # --- Apps ---
+    section_header "Apps"
+    echo ""
+
+    local apps
+    apps=$(dokku_list_apps) || true
+    if [[ -z "$apps" ]]; then
+        dim "(no apps)"
+    else
+        printf "    ${C_DIM}%-14s %-30s %-14s %-12s %-5s${C_RESET}\n" "NAME" "DOMAIN" "PORTS" "STATUS" "DNS"
+        printf "    ${C_CHROME}%s${C_RESET}\n" "$(printf '─%.0s' $(seq 1 75))"
+
+        while IFS= read -r app; do
+            local domain ports status dns_result dns_icon status_icon
+            domain=$(dokku_app_domains "$app")
+            ports=$(dokku_app_ports "$app")
+            status=$(dokku_app_status "$app")
+            dns_result=$(dns_check "$domain" 2>/dev/null || true)
+            if [[ -n "$dns_result" ]]; then
+                dns_icon="${C_SUCCESS}✓${C_RESET}"
+            else
+                dns_icon="${C_ERROR}✗${C_RESET}"
+            fi
+
+            case "$status" in
+                running)        status_icon="${C_SUCCESS}●${C_RESET}" ;;
+                "not deployed") status_icon="${C_WARN}○${C_RESET}" ;;
+                *)              status_icon="${C_ERROR}○${C_RESET}" ;;
+            esac
+
+            printf "    %-14s %-30s %-14s " "$app" "$domain" "$ports"
+            echo -e "${status_icon} ${status}     ${dns_icon}"
+        done <<< "$apps"
+    fi
+
+    # --- Ingress Rules ---
+    section_header "Ingress Rules"
+    echo ""
+
+    local i=1
+    while IFS=$'\t' read -r hostname service; do
+        if [[ "$hostname" == "(catch-all)" ]]; then
+            echo -e "    ${C_DIM}${i}. (catch-all)            →  ${service}${C_RESET}"
+        else
+            printf "    %d. %-24s ${C_CHROME}→${C_RESET}  %s\n" "$i" "$hostname" "$service"
+        fi
+        ((i++))
+    done < <(yaml_list_ingress)
+
+    # --- Cross-validation ---
+    echo ""
+    local warnings=0
+
+    while IFS= read -r app; do
+        local domain
+        domain=$(dokku_app_domains "$app")
+        if [[ -n "$domain" ]]; then
+            local has
+            has=$(yaml_has_hostname "$domain")
+            if [[ "$has" != "yes" ]]; then
+                warn "App '${app}' (${domain}) has no matching ingress rule"
+                ((warnings++)) || true
+            fi
+        fi
+    done <<< "$apps"
+
+    while IFS=$'\t' read -r hostname service; do
+        if [[ "$hostname" == "(catch-all)" ]]; then
+            continue
+        fi
+        local found=0
+        while IFS= read -r app; do
+            local domain
+            domain=$(dokku_app_domains "$app")
+            if [[ "$domain" == "$hostname" ]]; then
+                found=1
+                break
+            fi
+        done <<< "$apps"
+        if ((found == 0)); then
+            warn "Ingress rule '${hostname}' has no matching Dokku app"
+            ((warnings++)) || true
+        fi
+    done < <(yaml_list_ingress)
+
+    if ((warnings == 0)); then
+        success "All apps and ingress rules are in sync"
+    fi
+
+    echo ""
+}
+
+
+###############################################################################
+# Command: list
+###############################################################################
+
+cmd_list() {
+    preflight
+
+    local apps
+    apps=$(dokku_list_apps) || true
+    if [[ -z "$apps" ]]; then
+        info "No apps found."
+        return
+    fi
+
+    section_header "Apps"
+    echo ""
+    printf "    ${C_DIM}%-14s %-30s %-14s %-12s${C_RESET}\n" "NAME" "DOMAIN" "PORTS" "STATUS"
+    printf "    ${C_CHROME}%s${C_RESET}\n" "$(printf '─%.0s' $(seq 1 70))"
+    while IFS= read -r app; do
+        local domain ports status status_icon
+        domain=$(dokku_app_domains "$app")
+        ports=$(dokku_app_ports "$app")
+        status=$(dokku_app_status "$app")
+        case "$status" in
+            running)        status_icon="${C_SUCCESS}●${C_RESET}" ;;
+            "not deployed") status_icon="${C_WARN}○${C_RESET}" ;;
+            *)              status_icon="${C_ERROR}○${C_RESET}" ;;
+        esac
+        printf "    %-14s %-30s %-14s " "$app" "$domain" "$ports"
+        echo -e "${status_icon} ${status}"
+    done <<< "$apps"
+    echo ""
+}
+
+###############################################################################
+# Command: deploy
+###############################################################################
+
+cmd_deploy() {
+    preflight
+
+    local name="" hostname="" port="" repo="" branch="" app_dir="" no_push=false
+    local has_app_source=false port_explicit=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -H|--hostname) hostname="$2"; shift 2 ;;
+            -p|--port)     port="$2"; port_explicit=true; shift 2 ;;
+            -r|--repo)     repo="$2"; shift 2 ;;
+            -b|--branch)   branch="$2"; shift 2 ;;
+            -d|--dir)      app_dir="$2"; shift 2 ;;
+            --no-push)     no_push=true; shift ;;
+            -y|--yes)      YES=true; shift ;;
+            -*)            error "Unknown flag: $1"; return 1 ;;
+            *)             name="$1"; shift ;;
+        esac
+    done
+
+    if [[ -z "$name" ]] && $YES; then
+        error "App name required when using -y/--yes."
+        return 1
+    fi
+
+    section_header "Deploy Application"
+    echo ""
+
+    # App name (prompt if not given)
+    if [[ -z "$name" ]]; then
+        prompt "App name (a-z, 0-9, hyphens)"
+        read -r name
+    fi
+
+    # Validate name
+    if ! [[ "$name" =~ ^[a-z][a-z0-9-]{1,29}$ ]]; then
+        error "Invalid name '$name'. Use 2-30 chars: lowercase letters, numbers, hyphens. Must start with a letter."
+        return 1
+    fi
+
+    if dokku_app_exists "$name"; then
+        error "App '$name' already exists in Dokku."
+        return 1
+    fi
+
+    # --- Resolve app source ---
+    if [[ -n "$app_dir" ]]; then
+        # --dir given: validate
+        if [[ ! -d "$app_dir" ]]; then
+            error "Directory '$app_dir' does not exist."
+            return 1
+        fi
+        if [[ ! -d "$app_dir/.git" ]]; then
+            error "Directory '$app_dir' is not a git repository."
+            return 1
+        fi
+        has_app_source=true
+    elif [[ -n "$repo" ]]; then
+        # --repo given: will clone to apps/<name>
+        app_dir="$SCRIPT_DIR/apps/$name"
+        has_app_source=true
+    elif [[ -d "$SCRIPT_DIR/apps/$name/.git" ]]; then
+        # Auto-detect: existing clone in apps/<name>
+        app_dir="$SCRIPT_DIR/apps/$name"
+        has_app_source=true
+        info "Found existing app source at $app_dir"
+    elif ! $YES; then
+        # Interactive: offer to clone
+        if confirm "Clone app from GitHub?"; then
+            prompt "GitHub repo (owner/repo)"
+            read -r repo
+            if [[ -n "$repo" ]]; then
+                app_dir="$SCRIPT_DIR/apps/$name"
+                has_app_source=true
+            fi
+        fi
+    fi
+
+    # --- Port auto-detection (only if dir already exists and port not explicit) ---
+    local detected_port="" detected_source=""
+    if ! $port_explicit && $has_app_source && [[ -d "$app_dir" ]]; then
+        local detect_result
+        detect_result=$(detect_app_port "$app_dir") || true
+        if [[ -n "$detect_result" ]]; then
+            detected_port="${detect_result%% *}"
+            detected_source="${detect_result#* }"
+        fi
+    fi
+
+    # --- Hostname ---
+    if [[ -z "$hostname" ]]; then
+        if [[ -z "$DOKKU_HOSTNAME" ]]; then
+            if $YES; then
+                DOKKU_HOSTNAME="apps.local"
+            else
+                box "${C_WARN}DOKKU_HOSTNAME is not set${C_RESET}" \
+                    "" \
+                    "  Set it in ${C_ACCENT}.env${C_RESET} or enter a default domain now."
+                echo ""
+                prompt "Default domain (e.g. example.com)" "apps.local"
+                read -r DOKKU_HOSTNAME
+                DOKKU_HOSTNAME="${DOKKU_HOSTNAME:-apps.local}"
+            fi
+        fi
+        local default_host="${name}.${DOKKU_HOSTNAME}"
+        if $YES; then
+            hostname="$default_host"
+        else
+            prompt "Hostname" "$default_host"
+            read -r hostname
+            hostname="${hostname:-$default_host}"
+        fi
+    fi
+
+    # Check if hostname already in ingress
+    local has_ingress
+    has_ingress=$(yaml_has_hostname "$hostname")
+    if [[ "$has_ingress" == "yes" ]]; then
+        error "Hostname '$hostname' already has an ingress rule."
+        return 1
+    fi
+
+    # --- Port resolution ---
+    local port_deferred=false
+    if ! $port_explicit; then
+        if [[ -n "$detected_port" ]]; then
+            # Port was detected from existing directory
+            if $YES; then
+                port="$detected_port"
+                info "Auto-detected port $port ($detected_source)"
+            else
+                echo -e "  ${C_INFO}·${C_RESET} Detected port ${C_BOLD}${C_WHITE}$detected_port${C_RESET} ($detected_source)"
+                if confirm "Use detected port $detected_port?"; then
+                    port="$detected_port"
+                else
+                    prompt "App port" "5000"
+                    read -r port
+                    port="${port:-5000}"
+                fi
+            fi
+        elif $has_app_source && [[ ! -d "$app_dir" ]]; then
+            # Will clone — defer port detection
+            port_deferred=true
+        elif $YES; then
+            port=5000
+        else
+            prompt "App port" "5000"
+            read -r port
+            port="${port:-5000}"
+        fi
+    fi
+
+    # Validate port (skip if deferred)
+    if ! $port_deferred; then
+        if ! [[ "$port" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
+            error "Invalid port '$port'."
+            return 1
+        fi
+    fi
+
+    # Root domain check
+    local is_root=false
+    local dot_count
+    dot_count=$(echo "$hostname" | tr -cd '.' | wc -c)
+    if ((dot_count == 1)); then
+        is_root=true
+    fi
+
+    # --- Compute adaptive steps ---
+    local do_clone=false do_push=false
+    if [[ -n "$repo" ]] && [[ ! -d "$app_dir/.git" ]]; then
+        do_clone=true
+    fi
+    if $has_app_source && ! $no_push; then
+        do_push=true
+    fi
+
+    local total_steps=5  # base: dokku, dns, ingress, cloudflared, verify
+    if $do_clone; then ((total_steps++)) || true; fi
+    if $do_push; then ((total_steps++)) || true; fi
+
+    local n=1
+    local step_clone="" step_dokku="" step_dns="" step_ingress="" step_cf="" step_push="" step_verify=""
+    if $do_clone; then step_clone="$n"; ((n++)) || true; fi
+    step_dokku="$n"; ((n++)) || true
+    step_dns="$n"; ((n++)) || true
+    step_ingress="$n"; ((n++)) || true
+    step_cf="$n"; ((n++)) || true
+    if $do_push; then step_push="$n"; ((n++)) || true; fi
+    step_verify="$n"
+
+    # --- Summary ---
+    section_header "Deploy Plan"
+    echo ""
+    kv "App name" "$name"
+    kv "Hostname" "$hostname"
+    if $port_deferred; then
+        kv_color "Port" "(auto-detect after clone)" "$C_DIM"
+    else
+        kv "Port" "$port"
+        kv "Port map" "http:80:$port"
+    fi
+    if [[ -n "$repo" ]]; then
+        kv "Repo" "$repo"
+    fi
+    if [[ -n "$app_dir" ]]; then
+        kv "App dir" "$app_dir"
+    fi
+    if [[ -n "$branch" ]]; then
+        kv "Branch" "$branch"
+    fi
+    if $is_root; then
+        echo -e "    ${C_WARN}Root domain detected${C_RESET}"
+        if [[ -n "$CF_API_TOKEN" ]]; then
+            dim "    Will create www → root redirect"
+        else
+            dim "    www redirect requires CF_API_TOKEN"
+        fi
+    fi
+    echo ""
+    dim "  Steps:"
+    if $do_clone; then
+        dim "    ${step_clone}. Clone repo from GitHub"
+    fi
+    dim "    ${step_dokku}. Create Dokku app + configure"
+    dim "    ${step_dns}. Create DNS CNAME"
+    dim "    ${step_ingress}. Add ingress rule"
+    dim "    ${step_cf}. Restart cloudflared"
+    if $do_push; then
+        dim "    ${step_push}. Push app to Dokku"
+    fi
+    dim "    ${step_verify}. Verify setup"
+    echo ""
+
+    if ! confirm "Proceed with deploy?"; then
+        info "Cancelled."
+        return 0
+    fi
+
+    echo ""
+    local failed=0
+
+    # Pre-check: verify DNS method is available
+    if [[ -z "$CF_API_TOKEN" ]] || ! cf_token_verify 2>/dev/null; then
+        local _cert_result
+        _cert_result=$(cert_find_for_hostname "$hostname") || true
+        if [[ -n "$_cert_result" ]]; then
+            local _cert_zone="${_cert_result#* }"
+            warn "No API token — using zone cert fallback (${_cert_zone} subdomains only)"
+        else
+            # No cert fallback available — require API auth
+            if ! cf_require_auth "Deploying to ${hostname}"; then
+                return 1
+            fi
+        fi
+    fi
+
+    # === Step: Clone ===
+    if $do_clone; then
+        step "${step_clone}/${total_steps}" "Cloning $repo..."
+        if ! repo_clone "$repo" "$app_dir"; then
+            error "Failed to clone repository."
+            return 1
+        fi
+        success "Cloned to $app_dir"
+    fi
+
+    # Resolve deferred port after clone
+    if $port_deferred; then
+        local detect_result
+        detect_result=$(detect_app_port "$app_dir") || true
+        if [[ -n "$detect_result" ]]; then
+            port="${detect_result%% *}"
+            detected_source="${detect_result#* }"
+            info "Auto-detected port $port ($detected_source)"
+        else
+            port=5000
+            info "Could not detect port, using default: $port"
+        fi
+    fi
+
+    # Warn if no Dockerfile or package.json (buildpack detection may fail)
+    if $has_app_source && [[ -d "$app_dir" ]]; then
+        if [[ ! -f "$app_dir/Dockerfile" ]] && [[ ! -f "$app_dir/package.json" ]]; then
+            warn "No Dockerfile or package.json found — Dokku may not detect a buildpack."
+            warn "Consider adding a Dockerfile to $app_dir"
+        fi
+    fi
+
+    # === Step: Create Dokku app + configure ===
+    step "${step_dokku}/${total_steps}" "Creating Dokku app '$name'..."
+    local create_output create_exit=0
+    create_output=$(dokku_cmd apps:create "$name" 2>&1) || create_exit=$?
+    if [[ $create_exit -eq 0 ]] && echo "$create_output" | grep -qi "creating\|created\|already exists"; then
+        success "Dokku app '$name' created"
+    elif echo "$create_output" | grep -qi "already exists"; then
+        success "Dokku app '$name' already exists"
+    else
+        error "Failed to create Dokku app (exit $create_exit): $create_output"
+        return 1
+    fi
+
+    info "Configuring Dokku domains + ports..."
+    local domain_output domain_exit=0 port_output port_exit=0
+    domain_output=$(dokku_cmd domains:set "$name" "$hostname" 2>&1) || domain_exit=$?
+    if [[ $domain_exit -eq 0 ]]; then
+        success "Domain set to $hostname"
+    else
+        error "Domain setup failed (exit $domain_exit): $domain_output"
+        return 1
+    fi
+
+    port_output=$(dokku_cmd ports:set "$name" "http:80:$port" 2>&1) || port_exit=$?
+    if [[ $port_exit -eq 0 ]]; then
+        success "Ports set to http:80:$port"
+    else
+        error "Port setup failed (exit $port_exit): $port_output"
+        return 1
+    fi
+
+    # === Step: DNS ===
+    step "${step_dns}/${total_steps}" "Creating DNS CNAME for $hostname..."
+    local dns_output
+    dns_output=$(dns_create_cname "$hostname" 2>&1)
+    local dns_exit=$?
+    if [[ $dns_exit -eq 0 ]] && echo "$dns_output" | grep -qi "added\|already exists\|via API"; then
+        success "DNS CNAME created (or already exists)"
+    else
+        error "DNS creation failed (exit code $dns_exit): $dns_output"
+        if ! confirm "Continue deploy anyway?"; then
+            return 1
+        fi
+    fi
+
+    # === Step: Ingress ===
+    step "${step_ingress}/${total_steps}" "Adding ingress rule: $hostname → http://dokku:80"
+    local yaml_result
+    yaml_result=$(yaml_add_ingress "$hostname" "http://dokku:80" 2>&1)
+    if [[ "$yaml_result" == "ok" ]]; then
+        success "Ingress rule added to config.yml"
+    else
+        error "Failed to add ingress rule: $yaml_result"
+        error "Stopping — Dokku app was created but ingress was not added."
+        warn "Clean up with: ferry remove $name"
+        return 1
+    fi
+
+    # === Step: Restart cloudflared ===
+    step "${step_cf}/${total_steps}" "Restarting cloudflared..."
+    if ! cloudflared_restart; then
+        error "cloudflared failed to restart! Check config.yml."
+        warn "Backup available at ${CONFIG_FILE}.bak"
+        failed=1
+    fi
+
+    # === Step: Push to Dokku ===
+    if $do_push; then
+        step "${step_push}/${total_steps}" "Pushing app to Dokku..."
+        local push_exit=0
+        dokku_push "$app_dir" "$name" "$branch" || push_exit=$?
+        if [[ $push_exit -eq 0 ]]; then
+            success "App pushed to Dokku successfully"
+        else
+            error "Push failed (exit $push_exit)"
+            failed=1
+            echo ""
+            local display_branch
+            display_branch=$(git -C "$app_dir" branch --show-current 2>/dev/null) || display_branch="main"
+            warn "Retry with: cd $app_dir && git push dokku ${display_branch}:master"
+        fi
+    fi
+
+    # === Step: Verify ===
+    step "${step_verify}/${total_steps}" "Verifying setup..."
+    local verify_ok=true
+
+    # Check Dokku app exists
+    if dokku_app_exists "$name"; then
+        success "Dokku app '$name' exists"
+    else
+        error "Dokku app '$name' not found"
+        verify_ok=false
+    fi
+
+    # Check ingress rule
+    local verify_ingress
+    verify_ingress=$(yaml_has_hostname "$hostname")
+    if [[ "$verify_ingress" == "yes" ]]; then
+        success "Ingress rule for '$hostname' present"
+    else
+        error "Ingress rule for '$hostname' missing"
+        verify_ok=false
+    fi
+
+    # Check DNS (may take time to propagate)
+    local verify_dns
+    verify_dns=$(dns_check "$hostname" 2>/dev/null || true)
+    if [[ -n "$verify_dns" ]]; then
+        success "DNS resolves: $hostname → $verify_dns"
+    else
+        warn "DNS not resolving yet (may take a few minutes to propagate)"
+    fi
+
+    # Config validation
+    local config_valid
+    config_valid=$(yaml_validate 2>&1)
+    if [[ "$config_valid" == ok* ]]; then
+        success "Config validation passed: $config_valid"
+    else
+        error "Config validation failed: $config_valid"
+        verify_ok=false
+    fi
+
+    # Live check (only if we pushed)
+    if $do_push && ((failed == 0)); then
+        post_deploy_verify "$hostname" "$name" || true
+    fi
+
+    # Summary
+    echo ""
+    if ((failed == 0)) && $verify_ok; then
+        box "${C_SUCCESS}✓ Deploy Complete${C_RESET}"
+    else
+        box "${C_WARN}! Deploy finished with warnings${C_RESET}"
+        warn "Review the output above for any issues."
+    fi
+
+    echo ""
+    if $do_push && ((failed == 0)); then
+        echo -e "  ${C_SUCCESS}Your app is live at ${C_BOLD}https://$hostname${C_RESET}"
+    elif $has_app_source; then
+        local display_branch
+        display_branch=$(git -C "$app_dir" branch --show-current 2>/dev/null) || display_branch="main"
+        if $no_push; then
+            dim "Infrastructure is ready. Push manually:"
+        else
+            dim "Push manually to complete deployment:"
+        fi
+        echo ""
+        echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}cd $app_dir${C_RESET}"
+        echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}git push dokku ${display_branch}:master${C_RESET}"
+    else
+        dim "Next steps — push your app:"
+        echo ""
+        echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}git remote add dokku ssh://dokku@localhost:3022/${name}${C_RESET}"
+        echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}git push dokku main:master${C_RESET}"
+    fi
+    echo ""
+}
+
+###############################################################################
+# Command: remove
+###############################################################################
+
+cmd_remove() {
+    preflight
+
+    local name=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -y|--yes) YES=true; shift ;;
+            -*)       error "Unknown flag: $1"; return 1 ;;
+            *)        name="$1"; shift ;;
+        esac
+    done
+
+    if [[ -z "$name" ]] && $YES; then
+        error "App name required when using -y/--yes."
+        return 1
+    fi
+
+    section_header "Remove Application"
+    echo ""
+
+    if [[ -z "$name" ]]; then
+        echo -en "App name to remove: "
+        read -r name
+    fi
+
+    if [[ -z "$name" ]]; then
+        error "No app name provided."
+        return 1
+    fi
+
+    if ! dokku_app_exists "$name"; then
+        error "App '$name' does not exist in Dokku."
+        return 1
+    fi
+
+    # Get app info
+    local domain ports status
+    domain=$(dokku_app_domains "$name")
+    ports=$(dokku_app_ports "$name")
+    status=$(dokku_app_status "$name")
+
+    box "${C_ERROR}${C_BOLD}This will permanently remove:${C_RESET}" \
+        "" \
+        "  App:      ${name}" \
+        "  Domain:   ${domain}" \
+        "  Ports:    ${ports}" \
+        "  Status:   ${status}"
+    echo ""
+    dim "  Actions:"
+    dim "    1. Destroy Dokku app and all data"
+    dim "    2. Remove ingress rule"
+    dim "    3. Restart cloudflared"
+    if [[ -n "$CF_API_TOKEN" ]]; then
+        dim "    4. Delete DNS CNAME record"
+    else
+        dim "    4. DNS CNAME (manual — no API token)"
+    fi
+    echo ""
+
+    if ! confirm_name "$name"; then
+        info "Cancelled."
+        return 0
+    fi
+
+    echo ""
+
+    # Step 1: Destroy Dokku app
+    step "1/4" "Destroying Dokku app '$name'..."
+    local destroy_output
+    destroy_output=$(dokku_cmd apps:destroy "$name" --force 2>&1) || true
+    if ! dokku_app_exists "$name"; then
+        success "Dokku app '$name' destroyed"
+    else
+        error "Failed to destroy app: $destroy_output"
+        warn "Continuing with remaining cleanup..."
+    fi
+
+    # Step 2: Remove ingress rule
+    step "2/4" "Removing ingress rule for '$domain'..."
+    if [[ -n "$domain" ]]; then
+        local yaml_result
+        yaml_result=$(yaml_remove_ingress "$domain" 2>&1)
+        if [[ "$yaml_result" == "ok" ]]; then
+            success "Ingress rule removed"
+        else
+            warn "Ingress removal: $yaml_result"
+        fi
+    else
+        warn "No domain found — skipping ingress removal"
+    fi
+
+    # Step 3: Restart cloudflared
+    step "3/4" "Restarting cloudflared..."
+    cloudflared_restart || warn "cloudflared restart had issues"
+
+    # Step 4: DNS cleanup
+    step "4/4" "DNS cleanup..."
+    if [[ -n "$domain" ]]; then
+        if [[ -n "$CF_API_TOKEN" ]] && cf_token_verify 2>/dev/null; then
+            if dns_delete_record "$domain"; then
+                success "DNS CNAME for '$domain' deleted"
+            else
+                warn "Could not delete DNS record automatically"
+            fi
+        else
+            warn "Cannot delete DNS record — no valid API token."
+            echo -e "    ${C_WARN}The DNS CNAME for '${domain}' still exists in Cloudflare.${C_RESET}"
+            echo -e "    ${C_WARN}Delete it manually: Cloudflare Dashboard → DNS → delete CNAME for '${domain}'${C_RESET}"
+            dim "    Or run ${C_ACCENT}ferry login${C_RESET}${C_DIM} and re-run removal."
+        fi
+    fi
+
+    # Validate config
+    local config_valid
+    config_valid=$(yaml_validate 2>&1)
+    if [[ "$config_valid" == ok* ]]; then
+        success "Config validation passed: $config_valid"
+    fi
+
+    echo ""
+    box "${C_SUCCESS}✓ Removal Complete${C_RESET}" \
+        "" \
+        "  App '${name}' has been removed."
+    echo ""
+}
+
+###############################################################################
+# Command: reload
+###############################################################################
+
+cmd_reload() {
+    preflight
+
+    section_header "Validate & Reload"
+    echo ""
+
+    info "Validating config.yml..."
+    local valid
+    valid=$(yaml_validate 2>&1)
+    if [[ "$valid" == ok* ]]; then
+        success "Config valid: $valid"
+    else
+        error "Config validation failed: $valid"
+        error "Fix config.yml before reloading."
+        return 1
+    fi
+
+    echo ""
+    cloudflared_restart
+    echo ""
+}
+
+###############################################################################
+# Command: rebuild
+###############################################################################
+
+cmd_rebuild() {
+    preflight
+
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -y|--yes) shift ;;
+            *) name="$1"; shift ;;
+        esac
+    done
+
+    if [[ -z "$name" ]]; then
+        error "Usage: $0 rebuild <app-name>"
+        return 1
+    fi
+
+    if ! dokku_app_exists "$name"; then
+        error "App '$name' does not exist."
+        return 1
+    fi
+
+    section_header "Rebuild: $name"
+    echo ""
+    dokku_cmd ps:rebuild "$name"
+    echo ""
+    success "Rebuild complete."
+}
+
+###############################################################################
+# Command: logs
+###############################################################################
+
+cmd_logs() {
+    preflight
+
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -y|--yes) shift ;;
+            *) name="$1"; shift ;;
+        esac
+    done
+
+    if [[ -z "$name" ]]; then
+        error "Usage: $0 logs <app-name>"
+        return 1
+    fi
+
+    if ! dokku_app_exists "$name"; then
+        error "App '$name' does not exist."
+        return 1
+    fi
+
+    info "Tailing logs for '$name' (Ctrl+C to stop)..."
+    echo ""
+    dokku_cmd logs "$name" --tail
+}
+
+###############################################################################
+# Command: help
+###############################################################################
+cmd_help() {
+    echo ""
+    echo -e "  ${C_BOLD}${C_WHITE}ferry${C_RESET} ${C_DIM}— Deploy web apps via Dokku + Cloudflare Tunnel${C_RESET}"
+
+    section_header "Usage"
+    echo ""
+    echo -e "    ${C_WHITE}ferry${C_RESET}                                  ${C_DIM}Interactive menu${C_RESET}"
+    echo -e "    ${C_WHITE}ferry login${C_RESET} [-t <token>]               ${C_DIM}Set up Cloudflare API${C_RESET}"
+    echo -e "    ${C_WHITE}ferry deploy${C_RESET} <name> [opts] [-y]        ${C_DIM}Deploy a new app${C_RESET}"
+    echo -e "    ${C_WHITE}ferry remove${C_RESET} <name> [-y]               ${C_DIM}Remove an app${C_RESET}"
+    echo -e "    ${C_WHITE}ferry status${C_RESET}                           ${C_DIM}System dashboard${C_RESET}"
+    echo -e "    ${C_WHITE}ferry list${C_RESET}                             ${C_DIM}Quick app list${C_RESET}"
+    echo -e "    ${C_WHITE}ferry reload${C_RESET}                           ${C_DIM}Validate + restart cloudflared${C_RESET}"
+    echo -e "    ${C_WHITE}ferry rebuild${C_RESET} <name>                   ${C_DIM}Rebuild a Dokku app${C_RESET}"
+    echo -e "    ${C_WHITE}ferry logs${C_RESET} <name>                      ${C_DIM}Tail app logs${C_RESET}"
+    echo -e "    ${C_WHITE}ferry help${C_RESET}                             ${C_DIM}Show this help${C_RESET}"
+
+    section_header "Deploy Flags"
+    echo ""
+    kv "-r, --repo" "GitHub repo to clone (owner/repo or URL)"
+    kv "-H, --hostname" "App hostname (default: <name>.\${DOKKU_HOSTNAME})"
+    kv "-p, --port" "App port (default: auto-detect, fallback: 5000)"
+    kv "-b, --branch" "Git branch to push (default: auto-detect)"
+    kv "-d, --dir" "Local app directory (skip clone)"
+    kv "--no-push" "Infrastructure only, skip git push"
+    kv "-y, --yes" "Skip all confirmations"
+    kv "-t, --token" "API token for login (skip prompt)"
+
+    section_header "Examples"
+    echo ""
+    echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp${C_RESET}"
+    echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp -r owner/repo -H app.example.com -y${C_RESET}"
+    echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp -d ./my-app -y${C_RESET}"
+    echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp -r owner/repo --no-push -y${C_RESET}"
+    echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry remove myapp -y${C_RESET}"
+
+    section_header "Environment"
+    echo ""
+    kv "TUNNEL_ID" "(required) Cloudflare tunnel ID"
+    kv "CF_API_TOKEN" "(auto) Set via ferry login"
+    kv "CF_ACCOUNT_ID" "(auto) Auto-discovered"
+    echo ""
+}
+
+###############################################################################
+# Command: login
+###############################################################################
+
+cmd_login() {
+    local provided_token=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t|--token) provided_token="$2"; shift 2 ;;
+            -y|--yes)   YES=true; shift ;;
+            -*)         error "Unknown flag: $1"; return 1 ;;
+            *)          shift ;;
+        esac
+    done
+
+    section_header "Cloudflare API Setup"
+    echo ""
+
+    # Step 1: Check current state
+    if [[ -n "$CF_API_TOKEN" ]]; then
+        info "Existing token found. Checking..."
+        if cf_token_verify; then
+            success "Current token is valid."
+            echo ""
+            section_header "Permissions"
+            cf_check_permissions
+            echo ""
+            cert_check_all
+            echo ""
+
+            if [[ -n "$provided_token" ]]; then
+                info "Replacing with provided token..."
+            elif [[ -z "$provided_token" ]] && $YES; then
+                # -y without -t: keep existing valid token
+                info "Keeping current valid token."
+                return 0
+            elif ! confirm "Replace existing token?"; then
+                info "Keeping current token."
+                return 0
+            fi
+        else
+            warn "Current token is ${_cf_token_status}. Let's set up a new one."
+            if [[ -z "$provided_token" ]] && ! [[ -t 0 ]]; then
+                error "Current token is ${_cf_token_status} and no new token provided (-t)."
+                return 1
+            fi
+        fi
+    else
+        info "No API token configured yet."
+        if [[ -z "$provided_token" ]] && ! [[ -t 0 ]]; then
+            error "No token configured and no token provided (-t). Cannot proceed non-interactively."
+            return 1
+        fi
+    fi
+
+    # Step 2: Get the new token
+    local new_token=""
+    if [[ -n "$provided_token" ]]; then
+        new_token="$provided_token"
+    else
+        # Show instructions only when user needs to create a token manually
+        echo ""
+        section_header "Create API Token"
+        echo ""
+        echo "  You need a Cloudflare API token with these permissions:"
+        echo ""
+        kv_color "Zone : DNS : Edit" "create/delete DNS records" "$C_SUCCESS"
+        kv_color "Zone : Zone : Read" "look up zone IDs" "$C_SUCCESS"
+        kv_color "Account : Tunnel : Read" "check tunnel status (optional)" "$C_DIM"
+        echo ""
+        echo "  Steps:"
+        echo "    1. Open the URL below in your browser"
+        echo "    2. Review the pre-filled permissions"
+        echo "    3. Under 'Zone Resources', select 'All zones'"
+        echo "    4. Click 'Continue to summary' → 'Create Token'"
+        echo "    5. Copy the token and paste it here"
+        echo ""
+        echo -e "  ${C_ACCENT}${CF_TOKEN_URL}${C_RESET}"
+        echo ""
+
+        # Try to open browser
+        if [[ -t 0 ]]; then
+            if command -v xdg-open &>/dev/null; then
+                if confirm "Open in browser?"; then
+                    xdg-open "$CF_TOKEN_URL" 2>/dev/null &
+                fi
+            elif command -v open &>/dev/null; then
+                if confirm "Open in browser?"; then
+                    open "$CF_TOKEN_URL" 2>/dev/null &
+                fi
+            fi
+        fi
+
+        echo ""
+        prompt "API token"
+        read -r new_token
+    fi
+
+    if [[ -z "$new_token" ]]; then
+        error "No token provided."
+        return 1
+    fi
+
+    # Trim whitespace
+    new_token=$(echo "$new_token" | xargs)
+
+    # Step 4: Validate token
+    info "Validating token..."
+    CF_API_TOKEN="$new_token"
+    export CF_API_TOKEN
+
+    if ! cf_token_verify; then
+        error "Token validation failed (${_cf_token_status})."
+        error "Make sure you copied the full token."
+        return 1
+    fi
+    success "Token is valid!"
+
+    # Step 5: Save to .env
+    env_set "CF_API_TOKEN" "$new_token"
+    success "Token saved to $ENV_FILE"
+
+    # Step 6: Discover account ID
+    echo ""
+    info "Discovering account..."
+    local account_id
+    account_id=$(cf_discover_account_id 2>&1) || true
+    if [[ -n "$CF_ACCOUNT_ID" ]]; then
+        success "Account ID saved: $CF_ACCOUNT_ID"
+    else
+        warn "Could not discover account ID (tunnel status checks may not work)"
+    fi
+
+    # Step 7: Check permissions
+    echo ""
+    section_header "Permissions"
+    if cf_check_permissions; then
+        echo ""
+        success "All critical permissions verified!"
+    else
+        echo ""
+        warn "Some permissions are missing. The token may need more access."
+        dim "Go to: https://dash.cloudflare.com/profile/api-tokens"
+        dim "Edit the token and add the missing permissions."
+    fi
+
+    # Step 8: Check cert.pem scope
+    echo ""
+    cert_check_all
+
+    # Step 9: Summary
+    echo ""
+    echo ""
+    box "${C_SUCCESS}✓ Setup Complete${C_RESET}" \
+        "" \
+        "  ${C_SUCCESS}✓${C_RESET} Create DNS records for any domain" \
+        "  ${C_SUCCESS}✓${C_RESET} Delete DNS records on app removal" \
+        "  ${C_SUCCESS}✓${C_RESET} Look up zones automatically"
+    echo ""
+    echo -e "  cert.pem is no longer needed for DNS operations."
+    dim "(It's still used as a fallback if the API token doesn't work)"
+    echo ""
+}
+
+###############################################################################
+# Interactive Selector
+###############################################################################
+
+_TUI_SELECTED=0
+
+tui_select() {
+    # Arrow-key interactive selector.
+    # Usage: tui_select "title" "opt1|desc1" "opt2|desc2" ...
+    # Result stored in _TUI_SELECTED (0-based index). Returns 1 if quit.
+    local title="$1"
+    shift
+    local options=("$@")
+    local count=${#options[@]}
+
+    # Non-TTY fallback: numbered list
+    if ! $_IS_TTY; then
+        echo ""
+        echo "  $title"
+        echo ""
+        local i
+        for ((i=0; i<count; i++)); do
+            echo "  $((i+1))) ${options[$i]}"
+        done
+        echo ""
+        echo -en "  Choice [1-$count]: "
+        local choice
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= count)); then
+            _TUI_SELECTED=$((choice - 1))
+            return 0
+        fi
+        return 1
+    fi
+
+    local selected=0
+
+    # Hide cursor
+    tput civis 2>/dev/null || true
+    trap 'tput cnorm 2>/dev/null || true; trap - RETURN' RETURN
+
+    # Header
+    section_header "$title"
+    echo ""
+
+    # Draw function
+    _tui_draw() {
+        local i
+        for ((i=0; i<count; i++)); do
+            printf '\033[2K'
+            if ((i == selected)); then
+                echo -e "  ${C_ACCENT}❯${C_RESET} ${C_BOLD}${C_WHITE}${options[$i]}${C_RESET}"
+            else
+                echo -e "    ${C_DIM}${options[$i]}${C_RESET}"
+            fi
+        done
+    }
+
+    _tui_draw
+
+    while true; do
+        local key
+        IFS= read -rsn1 key
+
+        case "$key" in
+            $'\x1b')
+                local seq
+                IFS= read -rsn2 -t 0.1 seq || true
+                case "$seq" in
+                    '[A') ((selected > 0)) && ((selected--)) || true ;;
+                    '[B') ((selected < count - 1)) && ((selected++)) || true ;;
+                esac
+                ;;
+            k) ((selected > 0)) && ((selected--)) || true ;;
+            j) ((selected < count - 1)) && ((selected++)) || true ;;
+            '')
+                tput cnorm 2>/dev/null || true
+                _TUI_SELECTED=$selected
+                echo ""
+                return 0
+                ;;
+            q)
+                tput cnorm 2>/dev/null || true
+                _TUI_SELECTED=255
+                return 1
+                ;;
+        esac
+
+        printf '\033[%dA' "$count"
+        _tui_draw
+    done
+}
+
+###############################################################################
+# Interactive Menu
+###############################################################################
+
+interactive_menu() {
+    while true; do
+        tui_select "Ferry" \
+            "Status       System dashboard" \
+            "List         Quick app list" \
+            "Deploy       Deploy a new app" \
+            "Remove       Remove an app" \
+            "Reload       Validate + restart cloudflared" \
+            "Rebuild      Rebuild a Dokku app" \
+            "Logs         Tail app logs" \
+            "Help         Usage information" \
+            "Login        Cloudflare API setup" \
+            "Quit" || true
+
+        case "$_TUI_SELECTED" in
+            0) cmd_status || warn "Status check failed." ;;
+            1) cmd_list || warn "List failed." ;;
+            2) cmd_deploy || warn "Deploy failed — you can try again." ;;
+            3) cmd_remove || warn "Remove failed — you can try again." ;;
+            4) cmd_reload || warn "Reload failed — you can try again." ;;
+            5)
+                prompt "App name"
+                read -r app_name
+                cmd_rebuild "$app_name" || warn "Rebuild failed."
+                ;;
+            6)
+                prompt "App name"
+                read -r app_name
+                cmd_logs "$app_name" || warn "Logs failed."
+                ;;
+            7) cmd_help ;;
+            8) cmd_login || warn "Login failed — you can try again." ;;
+            9|255) echo ""; dim "Bye!"; exit 0 ;;
+        esac
+    done
+}
+
+###############################################################################
+# Main
+###############################################################################
+
+main() {
+    ferry_intro
+
+    local command=""
+    local args=()
+
+    # Parse global flags and collect remaining args
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -y|--yes) YES=true; shift ;;
+            *)        args+=("$1"); shift ;;
+        esac
+    done
+
+    command="${args[0]:-}"
+    # Remove first element (command) from args
+    if [[ ${#args[@]} -gt 0 ]]; then
+        args=("${args[@]:1}")
+    fi
+
+    case "$command" in
+        login)   cmd_login "${args[@]+"${args[@]}"}" ;;
+        deploy)  cmd_deploy "${args[@]+"${args[@]}"}" ;;
+        remove)  cmd_remove "${args[@]+"${args[@]}"}" ;;
+        status)  cmd_status ;;
+        list)    cmd_list ;;
+        reload)  cmd_reload ;;
+        rebuild) cmd_rebuild "${args[@]+"${args[@]}"}" ;;
+        logs)    cmd_logs "${args[@]+"${args[@]}"}" ;;
+        help|-h|--help) cmd_help ;;
+        "")      interactive_menu ;;
+        *)
+            error "Unknown command: $command"
+            cmd_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

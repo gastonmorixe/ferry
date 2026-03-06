@@ -1,0 +1,22 @@
+# Secrets & credentials
+.env
+tunnels/providers/cloudflare/config.yml
+tunnels/providers/cloudflare/*.cert
+
+# Internal audit notes
+todos/
+
+# App clones (each has its own repo)
+apps/*/
+
+# Build artifacts & temp files
+node_modules/
+*.bak
+*.log
+*.tmp
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

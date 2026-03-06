@@ -1,0 +1,11 @@
+# Cloudflare Tunnel configuration
+# Copy this to config.yml and replace placeholders, or let ferry auto-generate it.
+#
+# See: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/local-management/configuration-file/
+
+tunnel: <tunnel-id>
+credentials-file: /etc/cloudflared/credentials.json
+ingress:
+- hostname: app.example.com
+  service: http://dokku:80
+- service: http_status:404
