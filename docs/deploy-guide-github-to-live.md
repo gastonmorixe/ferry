@@ -63,7 +63,7 @@ cat apps/<repo>/Procfile 2>/dev/null
 
 Dokku supports two deployment methods:
 
-### A) Buildpacks (auto-detect) — no Dockerfile needed
+### A) Buildpacks (auto-detect, no Dockerfile needed)
 
 If your repo has **no Dockerfile**, Dokku uses Heroku buildpacks to auto-detect and build:
 
@@ -74,11 +74,11 @@ If your repo has **no Dockerfile**, Dokku uses Heroku buildpacks to auto-detect 
 | `Gemfile` | Ruby |
 | `go.mod` | Go |
 
-This is what happened with our Next.js deploy — Dokku detected `package.json` + `pnpm-lock.yaml`, installed pnpm, ran `pnpm install` and `pnpm run build`, then used `pnpm start` to run.
+For example, with a Next.js app Dokku detects `package.json` + `pnpm-lock.yaml`, installs pnpm, runs `pnpm install` and `pnpm run build`, then starts with `pnpm start`.
 
 **Note on ARM64:** On ARM64 hosts, Herokuish doesn't work, so Dokku automatically switches to the Cloud Native Buildpacks (CNB) `pack` builder. This works but the first build is slower (pulls the builder image). On x86_64, both Herokuish and CNB work.
 
-### B) Dockerfile — full control
+### B) Dockerfile (full control)
 
 If your repo has a `Dockerfile`, Dokku uses it directly. Recommended for:
 - Apps with native dependencies (e.g. sharp, canvas, bcrypt)
@@ -94,7 +94,7 @@ If your repo has a `Dockerfile`, Dokku uses it directly. Recommended for:
 
 ## Step 4: Deploy Infrastructure
 
-This creates the Dokku app, DNS record, ingress rule, and restarts cloudflared — all in one command:
+This creates the Dokku app, DNS record, ingress rule, and restarts cloudflared, all in one command:
 
 ```bash
 ferry deploy <app-name> -H <hostname> -p <port>
@@ -272,7 +272,7 @@ Some buildpacks may not support your architecture. Fix: add a `Dockerfile` to yo
 
 Your app must listen on `0.0.0.0` (not `127.0.0.1` or `localhost`). Most frameworks do this by default when `$PORT` is set.
 
-The "unable to enter the container to check that the process is bound" warning is cosmetic on Dokku with Docker's default PID namespace — it still deploys.
+The "unable to enter the container to check that the process is bound" warning is cosmetic on Dokku with Docker's default PID namespace. It still deploys.
 
 ### DNS doesn't resolve after deploy
 

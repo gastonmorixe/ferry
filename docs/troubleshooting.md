@@ -11,7 +11,7 @@ cd ~/ferry
 docker compose ps
 ```
 
-You should see `cloudflared` and `dokku` both with status `Up`. App containers (like `test-app.web.1`) are managed by Dokku, not Compose, so they won't appear here — use `docker ps` instead.
+You should see `cloudflared` and `dokku` both with status `Up`. App containers (like `test-app.web.1`) are managed by Dokku, not Compose, so they won't appear here. Use `docker ps` instead.
 
 ### Containers won't start
 
@@ -69,7 +69,7 @@ Containers in `docker-compose.yml` are configured with `dns: [172.17.0.1]`.
 
 ### DNS breaks completely after reboot
 
-**Symptom:** After a host reboot, all DNS stops working — not just containers but the host too. `nslookup google.com` fails everywhere.
+**Symptom:** After a host reboot, all DNS stops working. Not just containers, but the host too. `nslookup google.com` fails everywhere.
 
 **Cause:** NextDNS starts before Docker. The `docker0` interface (`172.17.0.1`) doesn't exist yet when NextDNS tries to bind to it. NextDNS has a bug/design issue where if **any** listener fails to bind, it tears down **all** listeners (including the working `localhost:53`) via a shared `cancel()` context.
 
@@ -109,7 +109,7 @@ docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}
 
 ```bash
 dokku network:report test-app
-# Look for "Network computed attach post deploy" — should say "webserver"
+# Look for "Network computed attach post deploy" (should say "webserver")
 
 # If missing:
 dokku network:set --global attach-post-deploy webserver
@@ -162,7 +162,7 @@ Common errors:
 |---|---|
 | `permission denied` on credentials.json | `chmod 644 ~/.cloudflared/<tunnel-id>.json` |
 | `tunnel not found` | Verify tunnel ID in `config.yml` matches the credentials file |
-| `server misbehaving` on DNS lookup | DNS inside container is broken — see "DNS Issues" above |
+| `server misbehaving` on DNS lookup | DNS inside container is broken. See "DNS Issues" above |
 | `failed to sufficiently increase receive buffer` | Warning only, safe to ignore |
 
 ### Verify tunnel is connected
@@ -184,15 +184,15 @@ INF Registered tunnel connection connIndex=3 ... location=gru20 protocol=quic
 
 **Symptom:** Deploy reports DNS success but the CNAME record is never created in Cloudflare DNS.
 
-**Cause:** Zone certs (e.g. `example.com.cert` in `tunnels/providers/cloudflare/`) are zone-scoped — each is tied to a single domain. When using the zone cert fallback, the cert must exist for the correct zone and be readable by the container.
+**Cause:** Zone certs (e.g. `example.com.cert` in `tunnels/providers/cloudflare/`) are zone-scoped. Each is tied to a single domain. When using the zone cert fallback, the cert must exist for the correct zone and be readable by the container.
 
-**Fix:** Use an API token instead of zone certs. Run `ferry login` to configure one. The ferry script handles zone certs correctly when falling back — it mounts the cert to `/tmp/cert.pem` inside the container and passes `--origincert /tmp/cert.pem` to cloudflared. But the API token approach is recommended as it works for all zones in your account without managing cert files.
+**Fix:** Use an API token instead of zone certs. Run `ferry login` to configure one. The ferry script handles zone certs correctly when falling back: it mounts the cert to `/tmp/cert.pem` inside the container and passes `--origincert /tmp/cert.pem` to cloudflared. The API token approach is recommended because it works for all zones in your account without managing cert files.
 
 ### cloudflared restart takes time to reconnect
 
 **Symptom:** After a cloudflared restart, the tunnel isn't immediately available.
 
-**Context:** The `cloudflared_restart` function in ferry already handles this -- it polls for `"Registered tunnel connection"` in the container logs (up to 5 attempts x 3 seconds) before declaring success. The tunnel needs all 4 connections registered to be fully operational. If the poll times out, the restart is flagged as having issues but the deploy continues.
+**Context:** The `cloudflared_restart` function in ferry already handles this. It polls for `"Registered tunnel connection"` in the container logs (up to 5 attempts x 3 seconds) before declaring success. The tunnel needs all 4 connections registered to be fully operational. If the poll times out, the restart is flagged as having issues but the deploy continues.
 
 ### Auth / token issues
 
@@ -222,7 +222,7 @@ docker compose restart cloudflared
 
 **Cause:** The script uses colored output for interactive use.
 
-**Fix:** Colors are auto-disabled when stdout is not a TTY (piped or redirected). If you still see codes, the detection may have failed -- redirect output explicitly:
+**Fix:** Colors are auto-disabled when stdout is not a TTY (piped or redirected). If you still see codes, the detection may have failed. Redirect output explicitly:
 
 ```bash
 ferry status > status.txt
@@ -235,7 +235,7 @@ ferry list | less
 
 **Cause:** Confirmation prompts (`confirm()`, `confirm_name()`) wait for user input on stdin.
 
-**Fix:** Use the `-y` / `--yes` flag to skip all confirmations. The `confirm()` and `confirm_name()` functions also return false automatically when stdin is not a TTY, so the script will not hang -- but it may skip steps you wanted. Use `-y` with explicit flags for predictable behavior:
+**Fix:** Use the `-y` / `--yes` flag to skip all confirmations. The `confirm()` and `confirm_name()` functions also return false automatically when stdin is not a TTY, so the script will not hang. It may skip steps you wanted, so use `-y` with explicit flags for predictable behavior:
 
 ```bash
 ferry deploy myapp -H app.example.com -p 3000 -y

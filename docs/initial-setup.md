@@ -35,7 +35,7 @@ The `cert.pem` from `cloudflared tunnel login` is zone-scoped (it contains a `zo
 cp ~/.cloudflared/cert.pem ~/ferry/tunnels/providers/cloudflare/example.com.cert
 ```
 
-For DNS operations on other domains (or to avoid managing zone certs entirely), use a Cloudflare API token via `ferry login` instead — this is the recommended approach.
+For DNS operations on other domains (or to avoid managing zone certs entirely), use a Cloudflare API token via `ferry login` instead. This is the recommended approach.
 
 ## Step 2: Generate SSH Key for Dokku
 
@@ -74,7 +74,7 @@ ss -lntu | grep ':53 '
 ```
 
 **Why this is safe:**
-- Docker doesn't need DNS to start — it just creates the daemon and bridge interface
+- Docker doesn't need DNS to start. It just creates the daemon and bridge interface
 - Host DNS is briefly unavailable during early boot (until NextDNS starts), which is already the case today
 - All container DNS goes through NextDNS, preserving ad-blocking and filtering
 
@@ -86,20 +86,20 @@ mkdir -p ~/ferry/{tunnels/providers/cloudflare,apps/test-app,docs}
 
 The following files were created:
 
-- `docker-compose.yml` — Defines cloudflared + dokku services
-- `tunnels/providers/cloudflare/config.yml` — Tunnel ingress rules (gitignored, auto-generated from TUNNEL_ID if missing)
-- `tunnels/providers/cloudflare/config.yml.example` — Template for config.yml
-- `~/.cloudflared/<tunnel-id>.json` — Tunnel credentials (mounted into container via docker-compose, never copied into project)
-- `.env` — TUNNEL_ID, DOKKU_HOSTNAME, CF_API_TOKEN, CF_ACCOUNT_ID
-- `.env.example` — Template for .env
-- `.gitignore` — Keeps secrets out of git
-- `apps/test-app/` — Node/Express test application
+- `docker-compose.yml`: cloudflared + dokku services
+- `tunnels/providers/cloudflare/config.yml`: tunnel ingress rules (gitignored, auto-generated from TUNNEL_ID if missing)
+- `tunnels/providers/cloudflare/config.yml.example`: template for config.yml
+- `~/.cloudflared/<tunnel-id>.json`: tunnel credentials (mounted into container via docker-compose, never copied into project)
+- `.env`: TUNNEL_ID, DOKKU_HOSTNAME, CF_API_TOKEN, CF_ACCOUNT_ID
+- `.env.example`: template for .env
+- `.gitignore`: keeps secrets out of git
+- `apps/test-app/`: Node/Express test application
 
 See the main README for the full file structure.
 
 ### Key detail: Credentials file permissions
 
-The cloudflared container runs as a non-root user and needs to read the credentials file. It is mounted directly from the host — no need to copy it into the project:
+The cloudflared container runs as a non-root user and needs to read the credentials file. It is mounted directly from the host, so there is no need to copy it into the project:
 
 ```bash
 chmod 644 ~/.cloudflared/<tunnel-id>.json
@@ -187,7 +187,7 @@ These are problems we hit and solved. Documented here so we don't repeat them.
 
 **Root cause:** Host DNS is `127.0.0.1` (NextDNS via DNS-over-HTTPS). Containers can't reach `127.0.0.1` on the host. All external DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9) are blocked by the gateway firewall on port 53.
 
-**Solution:** Configure NextDNS to also listen on `172.17.0.1:53` (Docker bridge gateway), and add `dns: [172.17.0.1]` to compose services. **But** NextDNS must start **after** Docker — otherwise `172.17.0.1` doesn't exist yet, the bind fails, and NextDNS's shared `cancel()` context tears down all listeners including `localhost:53`, causing total DNS failure. See Step 3 for the systemd drop-in fix.
+**Solution:** Configure NextDNS to also listen on `172.17.0.1:53` (Docker bridge gateway), and add `dns: [172.17.0.1]` to compose services. **But** NextDNS must start **after** Docker. Otherwise `172.17.0.1` doesn't exist yet, the bind fails, and NextDNS's shared `cancel()` context tears down all listeners including `localhost:53`, causing total DNS failure. See Step 3 for the systemd drop-in fix.
 
 ### 2. Cloudflared can't read credentials.json
 

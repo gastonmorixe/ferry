@@ -6,27 +6,27 @@ All notable changes to Ferry are documented here.
 
 ### Changed
 - **Dokku bumped to 0.37.7**
-- **Memory limits** — 256 MB `mem_limit` on cloudflared and dokku containers; `resource:limit --memory 256` applied per-app during deploy
-- **Hardened .gitignore** — covers `.env.*`, `*.pem`, `*.key`, `*.crt`, `*.ovpn`, `*.kubeconfig`, `*.secret(s)`, `secrets/`
-- **Docs updated** — fixed project name (`personal-webserver` → `ferry`), updated Docker/Dokku version references, added `mem_limit` to architecture docs
+- **Memory limits:** 256 MB `mem_limit` on cloudflared and dokku containers; `resource:limit --memory 256` applied per-app during deploy
+- **Hardened .gitignore:** covers `.env.*`, `*.pem`, `*.key`, `*.crt`, `*.ovpn`, `*.kubeconfig`, `*.secret(s)`, `secrets/`
+- **Docs updated:** fixed project name (`personal-webserver` to `ferry`), updated Docker/Dokku version references, added `mem_limit` to architecture docs
 
 ## [0.5.0] - 2026-03-06
 
 ### Changed
-- **Renamed to Ferry** — `manage.sh` is now `ferry` with intro header, version display
-- **DOKKU_HOSTNAME variable** — `docker-compose.yml` and deploy defaults use `${DOKKU_HOSTNAME}` instead of hardcoded domain
-- **Credentials mount refactor** — credentials.json now mounted directly from `~/.cloudflared/` instead of copied into project
-- **Config.yml management** — gitignored with `.example` template; auto-generated from TUNNEL_ID if missing
-- **Zone cert system** — `cert.pem` replaced by `tunnels/providers/cloudflare/<zone>.cert` files with hostname walk-up lookup
-- **Removed all hardcoded domains** — personal domains, tunnel IDs, account IDs stripped from code and docs
-- **Added `.env.example`** — documented template for all environment variables
-- **Open-source ready** — docs scrubbed of personal data, generic examples throughout
+- **Renamed to Ferry.** `manage.sh` is now `ferry` with intro header, version display
+- **DOKKU_HOSTNAME variable.** `docker-compose.yml` and deploy defaults use `${DOKKU_HOSTNAME}` instead of hardcoded domain
+- **Credentials mount refactor.** credentials.json now mounted directly from `~/.cloudflared/` instead of copied into project
+- **Config.yml management.** Gitignored with `.example` template; auto-generated from TUNNEL_ID if missing
+- **Zone cert system.** `cert.pem` replaced by `tunnels/providers/cloudflare/<zone>.cert` files with hostname walk-up lookup
+- **Removed all hardcoded domains.** Personal domains, tunnel IDs, account IDs stripped from code and docs
+- **Added `.env.example`.** Documented template for all environment variables
+- **Open-source ready.** Docs scrubbed of personal data, generic examples throughout
 
 ### Added
-- `ferry_intro()` — tiered intro header with version and timestamp
-- `cert_find_for_hostname()` — walks up hostname labels to find matching zone cert
-- `cert_list_zones()` / `cert_check_all()` — zone cert discovery and reporting
-- `_generate_default_config()` — auto-generates minimal `cloudflared/config.yml`
+- `ferry_intro()`: tiered intro header with version and timestamp
+- `cert_find_for_hostname()`: walks up hostname labels to find matching zone cert
+- `cert_list_zones()` / `cert_check_all()`: zone cert discovery and reporting
+- `_generate_default_config()`: auto-generates minimal `cloudflared/config.yml`
 - DOKKU_HOSTNAME guard in deploy flow with interactive prompt when unset
 
 ### Removed
@@ -38,14 +38,14 @@ All notable changes to Ferry are documented here.
 ## [0.4.0] - 2026-03-05
 
 ### Added
-- **Modern TUI redesign** — muted 256-color palette with 16-color and no-color fallbacks
-- Arrow-key interactive menu selector (`tui_select`) with ❯ pointer, j/k vim keys,
+- **Modern TUI redesign.** Muted 256-color palette with 16-color and no-color fallbacks
+- Arrow-key interactive menu selector (`tui_select`) with pointer, j/k vim keys,
   non-TTY numbered-list fallback
-- New display primitives: `section_header()` (trailing ─ line), `kv()`/`kv_color()`
-  (aligned key-value pairs), `box()` (╭╮╰╯ rounded corners), `prompt()` (❯ input),
+- New display primitives: `section_header()` (trailing line), `kv()`/`kv_color()`
+  (aligned key-value pairs), `box()` (rounded corners), `prompt()` (input),
   `dim()` (secondary text), `spinner_start()`/`spinner_stop()` (braille dot animation)
 - Tiered terminal capability detection (`_COLOR_TIER`, `_IS_TTY`, `_term_width`)
-- Status icons in app tables: ● running, ○ pending/stopped
+- Status icons in app tables: running, pending/stopped
 
 ### Changed
 - Color palette: sage green (success), muted red (error), warm amber (warn),
@@ -54,22 +54,22 @@ All notable changes to Ferry are documented here.
 - Interactive menu uses arrow-key selector instead of numbered list
 - Auth warning banners use `box()` with rounded corners
 - Deploy/remove completion blocks use `box()` for emphasis
-- Confirm prompts use ❯ pointer with bold Y / plain N
+- Confirm prompts use pointer with bold Y / plain N
 - Help output organized into sections with command chrome ($ prefix)
 - Removed old ANSI color constants (RED/GREEN/YELLOW/BLUE/CYAN)
 
 ## [0.3.0] - 2026-03-05
 
 ### Added
-- **Full auto-deploy from GitHub** — single command goes from repo to live site
+- **Full auto-deploy from GitHub.** Single command goes from repo to live site
   - `./manage.sh deploy myapp -r owner/repo -H app.example.com -y`
 - New deploy flags: `-r/--repo`, `-b/--branch`, `-d/--dir`, `--no-push`
-- `detect_app_port()` — auto-detects port from Dockerfile EXPOSE, package.json
-  frameworks (next/nuxt/remix/fastify/express → 3000), scripts.start, or Procfile
-- `repo_clone()` — clones via `gh`, normalizes URLs, validates owner/repo format
-- `dokku_push()` — auto-detects branch, manages dokku remote, pushes to Dokku
-- `post_deploy_verify()` — retries HTTP check (5×3s) after push, warns on timeout
-- Adaptive step numbering (5–7 steps depending on clone/push)
+- `detect_app_port()`: auto-detects port from Dockerfile EXPOSE, package.json
+  frameworks (next/nuxt/remix/fastify/express at 3000), scripts.start, or Procfile
+- `repo_clone()`: clones via `gh`, normalizes URLs, validates owner/repo format
+- `dokku_push()`: auto-detects branch, manages dokku remote, pushes to Dokku
+- `post_deploy_verify()`: retries HTTP check (5x3s) after push, warns on timeout
+- Adaptive step numbering (5 to 7 steps depending on clone/push)
 - Deferred port detection when cloning (detects after clone, before Dokku create)
 - Buildpack warning when no Dockerfile or package.json found
 - Live HTTP verification after successful push

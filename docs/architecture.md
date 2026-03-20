@@ -104,9 +104,9 @@ Upstream:    DNS-over-HTTPS     (bypasses port 53 firewall block)
 
 Both `cloudflared` and `dokku` services have `dns: [172.17.0.1]` in docker-compose.yml so they can resolve external hostnames through NextDNS.
 
-**Why this is needed:** The host's `/etc/resolv.conf` points to `127.0.0.1` (host loopback). Containers can't reach `127.0.0.1` on the host — they need the Docker bridge gateway IP (`172.17.0.1`) instead.
+**Why this is needed:** The host's `/etc/resolv.conf` points to `127.0.0.1` (host loopback). Containers can't reach `127.0.0.1` on the host, so they need the Docker bridge gateway IP (`172.17.0.1`) instead.
 
-**Boot ordering:** NextDNS must start **after** Docker, or the `docker0` interface (`172.17.0.1`) won't exist yet and the bind will fail — crashing all DNS. A systemd drop-in ensures correct ordering:
+**Boot ordering:** NextDNS must start **after** Docker, or the `docker0` interface (`172.17.0.1`) won't exist yet and the bind will fail, crashing all DNS. A systemd drop-in ensures correct ordering:
 
 ```
 /etc/systemd/system/nextdns.service.d/after-docker.conf:
@@ -158,8 +158,8 @@ Docker's embedded DNS (`127.0.0.11`) handles resolution of container names withi
 | Host Port | Container | Container Port | Purpose |
 |---|---|---|---|
 | 3022 | dokku | 22 | SSH for `git push dokku` |
-| (none) | dokku | 80 | Nginx — only reachable from webserver network |
-| (none) | test-app | 5000 | App — only reachable from webserver network |
+| (none) | dokku | 80 | Nginx, only reachable from webserver network |
+| (none) | test-app | 5000 | App, only reachable from webserver network |
 
 No ports 80 or 443 are exposed on the host. All HTTP traffic goes through the Cloudflare Tunnel.
 
@@ -216,4 +216,4 @@ This means you can run `dokku apps:list`, `dokku logs test-app`, etc. from anywh
 - **Cloudflare handles TLS:** Free SSL certificates, DDoS protection, WAF
 - **Hidden origin IP:** The server's public IP is never revealed; all traffic goes through Cloudflare
 - **Secrets gitignored:** `.env`, zone certs, and `config.yml` are all in `.gitignore`
-- **Docker socket access:** The Dokku container has access to `/var/run/docker.sock` — this is required for it to manage app containers but means the Dokku container has effective root access to the host's Docker engine
+- **Docker socket access:** The Dokku container has access to `/var/run/docker.sock`. This is required for it to manage app containers, but it means the Dokku container has effective root access to the host's Docker engine

@@ -1,4 +1,4 @@
-# Cloudflare Developer Documentation — LLM References
+# Cloudflare Developer Documentation: LLM References
 
 Source: https://developers.cloudflare.com/llms.txt
 

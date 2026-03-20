@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Self-hosted PaaS for deploying web apps with zero open ports.</strong></p>
 
-Ferry combines [Dokku](https://dokku.com) and [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) into a single workflow. One command takes a GitHub repo to a live HTTPS site — with automatic DNS, ingress routing, and TLS termination at Cloudflare's edge. Your server's IP is never exposed.
+Ferry combines [Dokku](https://dokku.com) and [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) into a single workflow. One command takes a GitHub repo to a live HTTPS site with automatic DNS, ingress routing, and TLS termination at Cloudflare's edge. Your server's IP is never exposed.
 
 ```bash
 ferry deploy myapp -r owner/repo -H app.example.com -y
@@ -32,15 +32,15 @@ ferry deploy myapp -r owner/repo -H app.example.com -y
 
 ## Features
 
-- **Zero open ports** — no 80, no 443, no public IP. All traffic flows through Cloudflare's encrypted tunnel
-- **One-command deploy** — `ferry deploy` handles app creation, DNS, ingress, tunnel restart, git push, and verification
-- **Git push deploys** — standard `git push dokku main:master` workflow, just like Heroku
-- **Automatic DNS** — CNAME records created via Cloudflare API for any domain in your account
-- **Auto port detection** — reads `Dockerfile EXPOSE`, framework conventions (Next.js, Nuxt, Remix, Express), or `package.json` scripts
-- **Free TLS** — SSL certificates managed by Cloudflare at the edge
-- **Interactive TUI** — arrow-key menu, 256-color palette, spinner animations, graceful degradation to plain text
-- **Fully scriptable** — `-y` flag for CI/CD, pipe-safe output, clean exit codes
-- **Docker Compose stack** — two containers (`cloudflared` + `dokku`), persistent volumes, `restart: unless-stopped`
+- **Zero open ports.** No 80, no 443, no public IP. All traffic flows through Cloudflare's encrypted tunnel.
+- **One-command deploy.** `ferry deploy` handles app creation, DNS, ingress, tunnel restart, git push, and verification.
+- **Git push deploys.** Standard `git push dokku main:master` workflow, just like Heroku.
+- **Automatic DNS.** CNAME records created via Cloudflare API for any domain in your account.
+- **Auto port detection.** Reads `Dockerfile EXPOSE`, framework conventions (Next.js, Nuxt, Remix, Express), or `package.json` scripts.
+- **Free TLS.** SSL certificates managed by Cloudflare at the edge.
+- **Interactive TUI.** Arrow-key menu, 256-color palette, spinner animations, graceful degradation to plain text.
+- **Fully scriptable.** `-y` flag for CI/CD, pipe-safe output, clean exit codes.
+- **Docker Compose stack.** Two containers (`cloudflared` + `dokku`), persistent volumes, `restart: unless-stopped`.
 
 ---
 
@@ -79,7 +79,7 @@ cd ~/ferry
 
 ```bash
 cp .env.example .env
-# Edit .env — set TUNNEL_ID and DOKKU_HOSTNAME
+# Edit .env: set TUNNEL_ID and DOKKU_HOSTNAME
 ```
 
 ### 3. Start the stack
@@ -154,7 +154,7 @@ ferry help               Show help
 ## Examples
 
 ```bash
-# Deploy from GitHub — clone, detect port, create DNS, push, verify
+# Deploy from GitHub (clone, detect port, create DNS, push, verify)
 ferry deploy myapp -r owner/repo -H app.example.com -y
 
 # Deploy with explicit port
@@ -175,7 +175,7 @@ ferry remove myapp -y
 # Set up API token non-interactively
 ferry login -t "your-api-token" -y
 
-# Pipe-safe — colors auto-disabled when output is not a TTY
+# Pipe-safe: colors auto-disabled when output is not a TTY
 ferry status > status.txt
 ```
 
@@ -206,7 +206,7 @@ Copy `.env.example` to `.env` to get started.
 
 ### DNS Management
 
-With an API token, Ferry creates and deletes DNS records via the Cloudflare API for any domain in your account. Zone IDs are auto-resolved from hostnames — no manual configuration needed.
+With an API token, Ferry creates and deletes DNS records via the Cloudflare API for any domain in your account. Zone IDs are auto-resolved from hostnames, so no manual configuration is needed.
 
 Without an API token, DNS creation falls back to zone-scoped origin certs via `cloudflared tunnel route dns`, limited to domains with a matching cert file in `tunnels/providers/cloudflare/`.
 
@@ -222,7 +222,7 @@ Detailed guides in [`docs/`](docs/):
 
 | Guide | Description |
 |---|---|
-| [Deploying Apps](docs/deploying-apps.md) | App lifecycle — deploy, update, scale, configure |
+| [Deploying Apps](docs/deploying-apps.md) | App lifecycle: deploy, update, scale, configure |
 | [Deploy Guide: GitHub to Live](docs/deploy-guide-github-to-live.md) | End-to-end walkthrough from repo to live URL |
 | [Architecture](docs/architecture.md) | Container topology, networking, DNS, traffic flow |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and solutions |
@@ -266,7 +266,7 @@ ferry/
 |---|---|
 | Linux host | Any architecture supported by Docker (x86_64, arm64) |
 | Docker + Docker Compose | v29+ / v5+ recommended |
-| Cloudflare account | Free tier works — tunnel + DNS |
+| Cloudflare account | Free tier works (tunnel + DNS) |
 | `cloudflared` | On host, for initial tunnel creation only |
 | `bash`, `curl`, `jq`, `python3` + PyYAML | Used by the `ferry` script |
 | `gh` (GitHub CLI) | Optional, for `--repo` clone support |
