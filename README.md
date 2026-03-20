@@ -11,7 +11,7 @@ Ferry combines 🐳 [Dokku](https://dokku.com) and 🌩️ [Cloudflare Tunnel](h
 One command takes a GitHub repo to a live HTTPS site with automatic 🌎 **DNS**, 🛬 **ingress routing**, and 🔒 **TLS termination** at Cloudflare's edge making your server's IP is **never exposed and 100% free self-hosting** even surviving ISP dynamic IP changes.
 
 ```bash
-ferry deploy myapp -r owner/repo -H app.example.com -y
+$ ferry deploy myapp -r owner/repo -H app.example.com -y
 # Done. Live at https://app.example.com
 ```
 
@@ -34,15 +34,15 @@ ferry deploy myapp -r owner/repo -H app.example.com -y
 
 ## Features
 
-- **Zero open ports.** No 80, no 443, no public IP. All traffic flows through Cloudflare's encrypted tunnel.
-- **One-command deploy.** `ferry deploy` handles app creation, DNS, ingress, tunnel restart, git push, and verification.
-- **Git push deploys.** Standard `git push dokku main:master` workflow, just like Heroku.
-- **Automatic DNS.** CNAME records created via Cloudflare API for any domain in your account.
-- **Auto port detection.** Reads `Dockerfile EXPOSE`, framework conventions (Next.js, Nuxt, Remix, Express), or `package.json` scripts.
-- **Free TLS.** SSL certificates managed by Cloudflare at the edge.
-- **Interactive TUI.** Arrow-key menu, 256-color palette, spinner animations, graceful degradation to plain text.
-- **Fully scriptable.** `-y` flag for CI/CD, pipe-safe output, clean exit codes.
-- **Docker Compose stack.** Two containers (`cloudflared` + `dokku`), persistent volumes, `restart: unless-stopped`.
+- 🛬 **Zero open ports.** No 80, no 443, no public IP. All traffic flows through Cloudflare's encrypted tunnel.
+- 🚀 **One-command deploy.** `ferry deploy` handles app creation, DNS, ingress, tunnel restart, git push, and verification.
+- 🧑‍💻 **Git push deploys.** Standard `git push dokku main:master` workflow, just like Heroku.
+- 🌎 **Automatic DNS.** CNAME records created via Cloudflare API for any domain in your account.
+- 🔦 **Auto port detection.** Reads `Dockerfile EXPOSE`, framework conventions (Next.js, Nuxt, Remix, Express), or `package.json` scripts.
+- 🔐 **Free TLS.** SSL certificates managed by Cloudflare at the edge.
+- 💻 **Interactive TUI.** Arrow-key menu, 256-color palette, spinner animations, graceful degradation to plain text.
+- 👩🏼‍💻 **Fully scriptable.** `-y` flag for CI/CD, pipe-safe output, clean exit codes.
+- 🐳 **Docker Compose stack.** Two containers (`cloudflared` + `dokku`), persistent volumes, `restart: unless-stopped`.
 
 ---
 
