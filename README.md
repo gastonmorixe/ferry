@@ -6,7 +6,9 @@
 
 <p align="center"><strong>Self-hosted PaaS for deploying web apps with zero open ports.</strong></p>
 
-Ferry combines [Dokku](https://dokku.com) and [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) into a single workflow. One command takes a GitHub repo to a live HTTPS site with automatic DNS, ingress routing, and TLS termination at Cloudflare's edge. Your server's IP is never exposed.
+Ferry combines 🐳 [Dokku](https://dokku.com) and 🌩️ [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) into a single workflow. 
+
+One command takes a GitHub repo to a live HTTPS site with automatic 🌎 **DNS**, 🛬 **ingress routing**, and 🔒 **TLS termination** at Cloudflare's edge making ** your server's IP is never exposed, 100% free.** (as of March 2026 based on Cloudfalre Tunnel service).
 
 ```bash
 ferry deploy myapp -r owner/repo -H app.example.com -y
@@ -15,7 +17,12 @@ ferry deploy myapp -r owner/repo -H app.example.com -y
 
 ---
 
-## Table of Contents
+## TODOs
+- [ ] [Other tunnels providers](https://github.com/anderspitman/awesome-tunneling?tab=readme-ov-file) like [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel)
+
+---
+
+## TOC
 
 - [Features](#features)
 - [How It Works](#how-it-works)
@@ -275,6 +282,6 @@ ferry/
 
 ## License
 
-MIT License. Copyright (c) 2025 [Gaston Morixe](https://github.com/gastonmorixe).
+MIT License. Copyright (c) 2026 [Gaston Morixe](https://github.com/gastonmorixe).
 
 See [LICENSE](LICENSE) for details.
