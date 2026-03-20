@@ -258,10 +258,7 @@ curl https://<hostname>
 
 ### Available domains
 
-Any domain in the Cloudflare account can be used:
-
-- example.com
-- myproject.dev
+Any domain in the Cloudflare account can be used. Check with `ferry status` to see accessible zones.
 
 ---
 

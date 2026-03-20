@@ -31,7 +31,7 @@ Deep dive into how all the pieces fit together: containers, networks, DNS, and t
 | Container | Image | Network(s) | Purpose |
 |---|---|---|---|
 | `cloudflared` | `cloudflare/cloudflared:latest` | webserver | Runs the Cloudflare Tunnel, receives traffic from the internet |
-| `dokku` | `dokku/dokku:0.37.6` | webserver, bridge | Runs nginx (port 80) + SSH (port 22), manages app lifecycle |
+| `dokku` | `dokku/dokku:0.37.7` | webserver, bridge | Runs nginx (port 80) + SSH (port 22), manages app lifecycle |
 | `test-app.web.1` | `dokku/test-app:latest` | bridge, webserver | The actual app container, managed by Dokku |
 
 ### Why Dokku is on Both Networks
@@ -49,6 +49,7 @@ cloudflared
   ├── depends_on: dokku
   ├── volumes: ./cloudflared → /etc/cloudflared (read-only)
   ├── dns: 172.17.0.1 (NextDNS on Docker bridge gateway)
+  ├── mem_limit: 256m
   ├── network: webserver
   └── restart: unless-stopped
 
@@ -58,6 +59,7 @@ dokku
   │     dokku-data → /mnt/dokku (persistent state)
   │     /var/run/docker.sock (so Dokku can manage containers)
   ├── dns: 172.17.0.1
+  ├── mem_limit: 256m
   ├── network: webserver
   ├── env: DOKKU_HOSTNAME, DOKKU_HOST_ROOT, DOKKU_LIB_HOST_ROOT
   └── restart: unless-stopped
@@ -194,12 +196,6 @@ The `ferry` script includes a full Cloudflare API integration layer:
 - **Auth gating:** `cf_auth_check` runs on startup (red banner if not authed), `cf_require_auth` hard-gates with inline login offer
 
 The API token (`CF_API_TOKEN`) replaces zone-scoped certs for DNS operations and works across all accessible zones. Zone certs are retained as a DNS creation fallback for domains with a matching cert file.
-
-### Accessible Zones
-
-example.com, myproject.dev
-
-Account: <your-account-name> (`<account-id>`)
 
 ## Host Wrapper: `/usr/local/bin/dokku`
 

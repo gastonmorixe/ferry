@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.5.0"
+FERRY_VERSION="0.5.1"
 FERRY_REPO="https://github.com/gastonmorixe/ferry-cli"
 
 ###############################################################################

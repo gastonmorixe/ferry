@@ -7,7 +7,7 @@ This documents how the server was set up from scratch on 2026-03-02. You shouldn
 The following were already installed on the host before this setup:
 
 - **Linux** (any architecture supported by Docker)
-- **Docker 29.2.1** + **Docker Compose v5.1.0**
+- **Docker 29.3.0** + **Docker Compose v5.1.0**
 - **cloudflared 2026.2.0** (installed on the host, used only for tunnel creation)
 - **NextDNS** running as system DNS resolver
 
@@ -118,7 +118,7 @@ cd ~/ferry
 docker compose up -d
 ```
 
-First run pulls `cloudflare/cloudflared:latest` (~55 MB) and `dokku/dokku:0.37.6` (~357 MB). Dokku takes ~15 seconds to initialize on first boot (generates SSH keys, DH parameters, sets hostname).
+First run pulls `cloudflare/cloudflared:latest` (~55 MB) and `dokku/dokku:0.37.7` (~357 MB). Dokku takes ~15 seconds to initialize on first boot (generates SSH keys, DH parameters, sets hostname).
 
 ## Step 7: Register SSH Key in Dokku
 

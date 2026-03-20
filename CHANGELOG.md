@@ -2,6 +2,14 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.5.1] - 2026-03-20
+
+### Changed
+- **Dokku bumped to 0.37.7**
+- **Memory limits** — 256 MB `mem_limit` on cloudflared and dokku containers; `resource:limit --memory 256` applied per-app during deploy
+- **Hardened .gitignore** — covers `.env.*`, `*.pem`, `*.key`, `*.crt`, `*.ovpn`, `*.kubeconfig`, `*.secret(s)`, `secrets/`
+- **Docs updated** — fixed project name (`personal-webserver` → `ferry`), updated Docker/Dokku version references, added `mem_limit` to architecture docs
+
 ## [0.5.0] - 2026-03-06
 
 ### Changed

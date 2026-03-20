@@ -109,13 +109,6 @@ ferry status > status.txt
 | Set up Cloudflare API | `ferry login` |
 | Push code to app | `git push dokku main:master` |
 
-## Deployed Apps
-
-| App | Domain | Port | Tech |
-|---|---|---|---|
-| test-app | `app.example.com` | 5000 | Node.js / Express |
-| staging | `staging.myproject.dev` | 3000 | Next.js |
-
 ## Documentation
 
 Detailed guides are in the [`docs/`](docs/) folder:
@@ -138,7 +131,7 @@ Detailed guides are in the [`docs/`](docs/) folder:
 ## Project Structure
 
 ```
-personal-webserver/
+ferry/
 ├── ferry                           # CLI for deploy/remove/status/login/etc.
 ├── CHANGELOG.md                    # Version history
 ├── docker-compose.yml              # Defines cloudflared + dokku services
@@ -168,13 +161,13 @@ personal-webserver/
         └── .dockerignore
 ```
 
-## Software Versions (as of initial setup)
+## Software Versions
 
 | Component | Version |
 |---|---|
 | Host OS | Linux |
-| Docker | 29.2.1 |
+| Docker | 29.3.0 |
 | Docker Compose | v5.1.0 |
-| Dokku | 0.37.6 |
+| Dokku | 0.37.7 |
 | cloudflared | 2026.2.0 |
 | NextDNS | Running on host |
