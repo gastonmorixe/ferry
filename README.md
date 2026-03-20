@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/ferry-logo.png" alt="Ferry" height="300" />
+  <img src="docs/assets/ferry-logo.png?v=2" alt="Ferry" height="300" />
 </p>
 
 <h1 align="center">Ferry</h1>
