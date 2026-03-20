@@ -8,7 +8,7 @@
 
 Ferry combines 🐳 [Dokku](https://dokku.com) and 🌩️ [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) into a single workflow. 
 
-One command takes a GitHub repo to a live HTTPS site with automatic 🌎 **DNS**, 🛬 **ingress routing**, and 🔒 **TLS termination** at Cloudflare's edge making ** your server's IP is never exposed, 100% free.** (as of March 2026 based on Cloudfalre Tunnel service).
+One command takes a GitHub repo to a live HTTPS site with automatic 🌎 **DNS**, 🛬 **ingress routing**, and 🔒 **TLS termination** at Cloudflare's edge making your server's IP is **never exposed and 100% free self-hosting** even surviving ISP dynamic IP changes.
 
 ```bash
 ferry deploy myapp -r owner/repo -H app.example.com -y
