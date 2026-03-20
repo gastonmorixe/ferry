@@ -1,7 +1,21 @@
 # Secrets & credentials
 .env
+.env.*
+!.env.example
+*.env
+*.env.*
 tunnels/providers/cloudflare/config.yml
 tunnels/providers/cloudflare/*.cert
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.ovpn
+*.kubeconfig
+*.secret
+*.secrets
+secrets/
 
 # Internal audit notes
 todos/

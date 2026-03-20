@@ -1798,6 +1798,14 @@ cmd_deploy() {
         return 1
     fi
 
+    local resource_output resource_exit=0
+    resource_output=$(dokku_cmd resource:limit "$name" --memory 256 2>&1) || resource_exit=$?
+    if [[ $resource_exit -eq 0 ]]; then
+        success "Resource limits set (memory: 256 MB)"
+    else
+        warn "Failed to set resource limits: $resource_output"
+    fi
+
     # === Step: DNS ===
     step "${step_dns}/${total_steps}" "Creating DNS CNAME for $hostname..."
     local dns_output

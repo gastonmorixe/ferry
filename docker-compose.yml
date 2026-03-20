@@ -10,13 +10,14 @@ services:
       - 172.17.0.1
     networks:
       - webserver
+    mem_limit: 256m
     restart: unless-stopped
     depends_on:
       dokku:
         condition: service_started
 
   dokku:
-    image: dokku/dokku:0.37.6
+    image: dokku/dokku:0.37.7
     container_name: dokku
     hostname: ${DOKKU_HOSTNAME:-apps.local}
     environment:
@@ -30,6 +31,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     dns:
       - 172.17.0.1
+    mem_limit: 256m
     networks:
       - webserver
     restart: unless-stopped
