@@ -29,11 +29,13 @@ cloudflared tunnel route dns <tunnel-name> app.example.com
 # Creates CNAME: app.example.com → <tunnel-id>.cfargotunnel.com
 ```
 
-The `cert.pem` from `cloudflared tunnel login` was copied to the project directory. **Note:** This cert is zone-scoped to `example.com` only (it contains a `zoneID` field locked to one zone). For DNS operations on other domains, use a Cloudflare API token via `ferry login`.
+The `cert.pem` from `cloudflared tunnel login` is zone-scoped (it contains a `zoneID` field locked to one zone). To use it as a DNS creation fallback, copy it to the zone cert directory and rename it to match the zone:
 
 ```bash
-cp ~/.cloudflared/cert.pem ~/ferry/cert.pem
+cp ~/.cloudflared/cert.pem ~/ferry/tunnels/providers/cloudflare/example.com.cert
 ```
+
+For DNS operations on other domains (or to avoid managing zone certs entirely), use a Cloudflare API token via `ferry login` instead — this is the recommended approach.
 
 ## Step 2: Generate SSH Key for Dokku
 
@@ -79,15 +81,17 @@ ss -lntu | grep ':53 '
 ## Step 4: Create Project Files
 
 ```bash
-mkdir -p ~/ferry/{cloudflared,apps/test-app,docs}
+mkdir -p ~/ferry/{tunnels/providers/cloudflare,apps/test-app,docs}
 ```
 
 The following files were created:
 
 - `docker-compose.yml` — Defines cloudflared + dokku services
-- `tunnels/providers/cloudflare/config.yml` — Tunnel ingress rules
-- `~/.cloudflared/<tunnel-id>.json` — Tunnel credentials (mounted into container via docker-compose)
-- `.env` — Tunnel ID reference
+- `tunnels/providers/cloudflare/config.yml` — Tunnel ingress rules (gitignored, auto-generated from TUNNEL_ID if missing)
+- `tunnels/providers/cloudflare/config.yml.example` — Template for config.yml
+- `~/.cloudflared/<tunnel-id>.json` — Tunnel credentials (mounted into container via docker-compose, never copied into project)
+- `.env` — TUNNEL_ID, DOKKU_HOSTNAME, CF_API_TOKEN, CF_ACCOUNT_ID
+- `.env.example` — Template for .env
 - `.gitignore` — Keeps secrets out of git
 - `apps/test-app/` — Node/Express test application
 

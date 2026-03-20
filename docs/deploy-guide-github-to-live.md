@@ -1,6 +1,6 @@
 # Deploy Guide: GitHub Repo to Live
 
-End-to-end guide for deploying a GitHub repository to a live URL using the Ferry server. Based on the real deployment of `my-app` to `staging.myproject.dev`.
+End-to-end guide for deploying a GitHub repository to a live URL using Ferry.
 
 ## Prerequisites
 

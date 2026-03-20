@@ -184,9 +184,9 @@ INF Registered tunnel connection connIndex=3 ... location=gru20 protocol=quic
 
 **Symptom:** Deploy reports DNS success but the CNAME record is never created in Cloudflare DNS.
 
-**Cause:** `cert.pem` is zone-scoped (tied to `example.com`). When using the cert.pem fallback, mounting it to `/home/nonroot/.cloudflared` inside the container doesn't work because cloudflared runs as UID 65532 with `HOME` unset, so it never finds the cert.
+**Cause:** Zone certs (e.g. `example.com.cert` in `tunnels/providers/cloudflare/`) are zone-scoped — each is tied to a single domain. When using the zone cert fallback, the cert must exist for the correct zone and be readable by the container.
 
-**Fix:** Use an API token instead of `cert.pem`. Run `ferry login` to configure one. The ferry script already handles cert.pem correctly when falling back (mounts to `/tmp/cert.pem` and passes `--origincert /tmp/cert.pem` as a global flag before the `tunnel` subcommand).
+**Fix:** Use an API token instead of zone certs. Run `ferry login` to configure one. The ferry script handles zone certs correctly when falling back — it mounts the cert to `/tmp/cert.pem` inside the container and passes `--origincert /tmp/cert.pem` to cloudflared. But the API token approach is recommended as it works for all zones in your account without managing cert files.
 
 ### cloudflared restart takes time to reconnect
 

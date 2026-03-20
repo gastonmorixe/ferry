@@ -47,7 +47,9 @@ Defined in `docker-compose.yml`:
 ```
 cloudflared
   ├── depends_on: dokku
-  ├── volumes: ./cloudflared → /etc/cloudflared (read-only)
+  ├── volumes:
+  │     ./tunnels/providers/cloudflare/config.yml → /etc/cloudflared/config.yml (read-only)
+  │     ~/.cloudflared/<tunnel-id>.json → /etc/cloudflared/credentials.json (read-only)
   ├── dns: 172.17.0.1 (NextDNS on Docker bridge gateway)
   ├── mem_limit: 256m
   ├── network: webserver

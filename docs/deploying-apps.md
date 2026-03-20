@@ -31,8 +31,12 @@ Available flags for `deploy`:
 
 | Flag | Description | Default |
 |---|---|---|
+| `-r` / `--repo` | GitHub repo to clone (`owner/repo` or URL) | (none) |
 | `-H` / `--hostname` | App hostname | `<name>.$DOKKU_HOSTNAME` |
-| `-p` / `--port` | App listen port | `5000` |
+| `-p` / `--port` | App listen port | auto-detect, fallback: 5000 |
+| `-b` / `--branch` | Git branch to push | auto-detect |
+| `-d` / `--dir` | Local app directory (skip clone) | (none) |
+| `--no-push` | Infrastructure only, skip git push | (off) |
 | `-y` / `--yes` | Skip all confirmations | (interactive) |
 
 When `-y` is used without a name, the script exits with an error immediately (no empty-name prompt). Colors are auto-disabled when output is piped, so redirected output is clean.

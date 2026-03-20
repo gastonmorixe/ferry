@@ -2,12 +2,12 @@
 #
 # ferry — Deploy web apps via Dokku + Cloudflare Tunnel
 #
-# https://github.com/gastonmorixe/ferry-cli
+# https://github.com/gastonmorixe/ferry
 #
 set -euo pipefail
 
 FERRY_VERSION="0.5.1"
-FERRY_REPO="https://github.com/gastonmorixe/ferry-cli"
+FERRY_REPO="https://github.com/gastonmorixe/ferry"
 
 ###############################################################################
 # Constants & Config
@@ -2198,6 +2198,7 @@ cmd_help() {
     section_header "Environment"
     echo ""
     kv "TUNNEL_ID" "(required) Cloudflare tunnel ID"
+    kv "DOKKU_HOSTNAME" "(required) Default domain for app hostnames"
     kv "CF_API_TOKEN" "(auto) Set via ferry login"
     kv "CF_ACCOUNT_ID" "(auto) Auto-discovered"
     echo ""
