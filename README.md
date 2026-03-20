@@ -4,7 +4,7 @@
 
 <h1 align="center">Ferry</h1>
 
-<p align="center"><strong>Self-hosted PaaS for deploying web apps with zero open ports.</strong></p>
+<p align="center"><strong>Self-hosted PaaS scaffold for self-hosting web apps for free and zero open ports</strong></p>
 
 Ferry combines 🐳 [Dokku](https://dokku.com) and 🌩️ [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) into a single workflow. 
 
@@ -14,11 +14,6 @@ One command takes a GitHub repo to a live HTTPS site with automatic 🌎 **DNS**
 ferry deploy myapp -r owner/repo -H app.example.com -y
 # Done. Live at https://app.example.com
 ```
-
----
-
-## TODOs
-- [ ] [Other tunnels providers](https://github.com/anderspitman/awesome-tunneling?tab=readme-ov-file) like [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel)
 
 ---
 
@@ -277,6 +272,18 @@ ferry/
 | `cloudflared` | On host, for initial tunnel creation only |
 | `bash`, `curl`, `jq`, `python3` + PyYAML | Used by the `ferry` script |
 | `gh` (GitHub CLI) | Optional, for `--repo` clone support |
+
+---
+
+## Amazing Communities:
+
+- [r/selfhosted](https://www.reddit.com/r/selfhosted/) 
+- [awesome-selfhosted](https://github.com/awesome-selfhosted/awesome-selfhosted)
+
+---
+
+## TODOs
+- [ ] [Other tunnels providers](https://github.com/anderspitman/awesome-tunneling?tab=readme-ov-file) like [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel)
 
 ---
 
