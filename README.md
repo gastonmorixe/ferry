@@ -11,6 +11,11 @@ Ferry combines 🐳 [Dokku](https://dokku.com) and 🌩️ [Cloudflare Tunnel](h
 It can scaffold a starter app with `ferry new`, or take an existing GitHub repo to a live HTTPS site with automatic 🌎 **DNS**, 🛬 **ingress routing**, and 🔒 **TLS termination** at Cloudflare's edge, so your server IP is **never exposed** while staying **100% free to self-host** even on dynamic residential IPs.
 
 ```bash
+# Scaffold and deploy in one flow
+$ ferry new myapp -t express --deploy -y
+# Done. App created and deployed
+
+# Or deploy an existing GitHub repo directly
 $ ferry deploy myapp -r owner/repo -H app.example.com -y
 # Done. Live at https://app.example.com
 ```
@@ -101,7 +106,10 @@ ferry login
 ### 5. Create or deploy your first app
 
 ```bash
-# Scaffold a new app locally, then deploy it
+# Fastest path: scaffold and deploy in one command
+ferry new myapp -t express --deploy -y
+
+# Or scaffold locally, then deploy later
 ferry new myapp -t express
 ferry deploy myapp
 
@@ -109,7 +117,7 @@ ferry deploy myapp
 ferry deploy myapp -r owner/repo -H myapp.example.com
 ```
 
-See [Initial Setup](docs/initial-setup.md) for the full first-time setup guide including tunnel creation, SSH keys, and DNS configuration.
+See [Initial Setup](docs/initial-setup.md) for the full first-time setup guide including tunnel creation, SSH keys, and DNS configuration. For a deeper app workflow guide, see [Deploying Apps](docs/deploying-apps.md).
 
 ---
 
@@ -263,7 +271,6 @@ Detailed guides in [`docs/`](docs/):
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and solutions |
 | [Initial Setup](docs/initial-setup.md) | First-time server setup reference |
 | [Cloudflare LLM Docs](docs/cloudflare-llms-index.md) | Cloudflare developer doc links |
-| [Proposal: ferry new](docs/proposal-ferry-new.md) | Draft design notes for the scaffold/generator system |
 
 ---
 
@@ -329,8 +336,7 @@ ferry/
 │   ├── architecture.md
 │   ├── troubleshooting.md
 │   ├── initial-setup.md
-│   ├── cloudflare-llms-index.md
-│   └── proposal-ferry-new.md
+│   └── cloudflare-llms-index.md
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
