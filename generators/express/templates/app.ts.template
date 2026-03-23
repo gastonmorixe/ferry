@@ -1,0 +1,222 @@
+import express, { Request, Response } from "express";
+import * as os from "os";
+import * as fs from "fs";
+import * as path from "path";
+
+const app = express();
+const PORT = Number(process.env.PORT) || {{APP_PORT}};
+const APP_NAME = "{{APP_NAME}}";
+
+// Trust proxy so req.ip is the real client IP behind a reverse proxy
+app.set("trust proxy", true);
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function buildPayload(req: Request) {
+  return {
+    app: APP_NAME,
+    ferry: true,
+    timestamp: new Date().toISOString(),
+    server: {
+      hostname: os.hostname(),
+      port: PORT,
+    },
+    request: {
+      method: req.method,
+      url: req.url,
+      protocol: req.protocol,
+      ip: req.ip ?? req.socket.remoteAddress ?? "unknown",
+      headers: req.headers as Record<string, string | string[] | undefined>,
+    },
+  };
+}
+
+function buildXml(data: ReturnType<typeof buildPayload>): string {
+  const headerEntries = Object.entries(data.request.headers)
+    .map(([k, v]) => {
+      const val = Array.isArray(v) ? v.join(", ") : (v ?? "");
+      const safe = val.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const safeKey = k.replace(/[^a-zA-Z0-9_-]/g, "_");
+      return `    <${safeKey}>${safe}</${safeKey}>`;
+    })
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<response>
+  <app>${data.app}</app>
+  <ferry>true</ferry>
+  <timestamp>${data.timestamp}</timestamp>
+  <server>
+    <hostname>${data.server.hostname}</hostname>
+    <port>${data.server.port}</port>
+  </server>
+  <request>
+    <method>${data.request.method}</method>
+    <url>${data.request.url}</url>
+    <protocol>${data.request.protocol}</protocol>
+    <ip>${data.request.ip}</ip>
+    <headers>
+${headerEntries}
+    </headers>
+  </request>
+</response>`;
+}
+
+function buildText(data: ReturnType<typeof buildPayload>): string {
+  const headerLines = Object.entries(data.request.headers)
+    .map(([k, v]) => {
+      const val = Array.isArray(v) ? v.join(", ") : (v ?? "");
+      return `  ${k}: ${val}`;
+    })
+    .join("\n");
+
+  return `# ${data.app}
+
+ferry: true
+timestamp: ${data.timestamp}
+
+## Server
+hostname: ${data.server.hostname}
+port: ${data.server.port}
+
+## Request
+method: ${data.request.method}
+url: ${data.request.url}
+protocol: ${data.request.protocol}
+ip: ${data.request.ip}
+
+## Headers
+${headerLines}
+`;
+}
+
+function buildHtml(req: Request): string {
+  const data = buildPayload(req);
+
+  const serverRows = [
+    ["hostname", data.server.hostname],
+    ["port", String(data.server.port)],
+  ];
+
+  const requestRows = [
+    ["method", data.request.method],
+    ["url", data.request.url],
+    ["protocol", data.request.protocol],
+    ["ip", data.request.ip],
+    ["timestamp", data.timestamp],
+  ];
+
+  const headerRows = Object.entries(data.request.headers).map(([k, v]) => [
+    k,
+    Array.isArray(v) ? v.join(", ") : (v ?? ""),
+  ]);
+
+  function rows(pairs: string[][]): string {
+    return pairs
+      .map(
+        ([k, v]) =>
+          `<tr><td>${escHtml(k)}</td><td>${escHtml(v)}</td></tr>`
+      )
+      .join("\n");
+  }
+
+  function escHtml(s: string): string {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escHtml(APP_NAME)}</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>${escHtml(APP_NAME)}</h1>
+    <p class="subtitle">
+      Express &middot; TypeScript &middot; deployed with
+      <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">Ferry</a>
+    </p>
+
+    <h2>Server</h2>
+    <table>
+      <tbody>
+        ${rows(serverRows)}
+      </tbody>
+    </table>
+
+    <h2>Request</h2>
+    <table>
+      <tbody>
+        ${rows(requestRows)}
+      </tbody>
+    </table>
+
+    <h2>Headers</h2>
+    <table>
+      <tbody>
+        ${rows(headerRows)}
+      </tbody>
+    </table>
+
+    <div class="formats">
+      <a class="active" href="/">HTML</a>
+      <a href="/json">JSON</a>
+      <a href="/xml">XML</a>
+      <a href="/text">Text</a>
+    </div>
+
+    <footer>
+      Deployed with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">Ferry</a>
+    </footer>
+  </div>
+</body>
+</html>`;
+}
+
+// ── Routes ───────────────────────────────────────────────────────────────────
+
+app.get("/health", (_req: Request, res: Response) => {
+  res.status(200).send("ok");
+});
+
+app.get("/style.css", (_req: Request, res: Response) => {
+  const cssPath = path.join(__dirname, "style.css");
+  if (fs.existsSync(cssPath)) {
+    res.setHeader("Content-Type", "text/css");
+    res.sendFile(cssPath);
+  } else {
+    res.status(404).send("/* style.css not found */");
+  }
+});
+
+app.get("/json", (req: Request, res: Response) => {
+  res.json(buildPayload(req));
+});
+
+app.get("/xml", (req: Request, res: Response) => {
+  res.setHeader("Content-Type", "application/xml; charset=utf-8");
+  res.send(buildXml(buildPayload(req)));
+});
+
+app.get("/text", (req: Request, res: Response) => {
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.send(buildText(buildPayload(req)));
+});
+
+app.get("/", (req: Request, res: Response) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(buildHtml(req));
+});
+
+// ── Start ────────────────────────────────────────────────────────────────────
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`[${APP_NAME}] listening on http://0.0.0.0:${PORT}`);
+});

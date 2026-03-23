@@ -1,0 +1,37 @@
+import { headers } from 'next/headers'
+import { hostname } from 'os'
+import { NextResponse } from 'next/server'
+
+export const dynamic = 'force-dynamic'
+
+export async function GET() {
+  const hdrs = await headers()
+  const headersObj: Record<string, string> = {}
+  hdrs.forEach((value, key) => {
+    headersObj[key] = value
+  })
+
+  const ip =
+    hdrs.get('x-real-ip') ||
+    hdrs.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    ''
+
+  const data = {
+    app: '{{APP_NAME}}',
+    ferry: true,
+    timestamp: new Date().toISOString(),
+    server: {
+      hostname: hostname(),
+      port: {{APP_PORT}},
+    },
+    request: {
+      method: 'GET',
+      url: hdrs.get('x-forwarded-uri') || '/json',
+      protocol: hdrs.get('x-forwarded-proto') || 'http',
+      ip,
+      headers: headersObj,
+    },
+  }
+
+  return NextResponse.json(data)
+}

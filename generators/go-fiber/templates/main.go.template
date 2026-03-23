@@ -1,0 +1,316 @@
+package main
+
+import (
+	"encoding/xml"
+	"fmt"
+	"log"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+)
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const appName = "{{APP_NAME}}"
+
+const defaultPort = "{{APP_PORT}}"
+
+// ── Data types ────────────────────────────────────────────────────────────────
+
+type Header struct {
+	Key   string
+	Value string
+}
+
+type JSONResponse struct {
+	App       string          `json:"app"`
+	Ferry     bool            `json:"ferry"`
+	Timestamp string          `json:"timestamp"`
+	Server    ServerInfo      `json:"server"`
+	Request   RequestInfoJSON `json:"request"`
+}
+
+type ServerInfo struct {
+	Hostname string `json:"hostname"`
+	Port     string `json:"port"`
+}
+
+type RequestInfoJSON struct {
+	Method   string            `json:"method"`
+	URL      string            `json:"url"`
+	Protocol string            `json:"protocol"`
+	IP       string            `json:"ip"`
+	Host     string            `json:"host"`
+	Headers  map[string]string `json:"headers"`
+}
+
+type XMLResponse struct {
+	XMLName   xml.Name       `xml:"response"`
+	App       string         `xml:"app"`
+	Ferry     bool           `xml:"ferry"`
+	Timestamp string         `xml:"timestamp"`
+	Server    XMLServerInfo  `xml:"server"`
+	Request   XMLRequestInfo `xml:"request"`
+}
+
+type XMLServerInfo struct {
+	Hostname string `xml:"hostname"`
+	Port     string `xml:"port"`
+}
+
+type XMLRequestInfo struct {
+	Method   string     `xml:"method"`
+	URL      string     `xml:"url"`
+	Protocol string     `xml:"protocol"`
+	IP       string     `xml:"ip"`
+	Host     string     `xml:"host"`
+	Headers  XMLHeaders `xml:"headers"`
+}
+
+type XMLHeaders struct {
+	Items []XMLHeader `xml:"header"`
+}
+
+type XMLHeader struct {
+	Key   string `xml:"key,attr"`
+	Value string `xml:",chardata"`
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func port() string {
+	if p := os.Getenv("PORT"); p != "" {
+		return p
+	}
+	return defaultPort
+}
+
+func hostname() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return h
+}
+
+func collectHeaders(c *fiber.Ctx) ([]Header, map[string]string) {
+	raw := c.GetReqHeaders()
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	list := make([]Header, 0, len(keys))
+	flat := make(map[string]string, len(keys))
+	for _, k := range keys {
+		v := strings.Join(raw[k], "; ")
+		list = append(list, Header{Key: k, Value: v})
+		flat[k] = v
+	}
+	return list, flat
+}
+
+func timestamp() string {
+	return time.Now().UTC().Format(time.RFC3339)
+}
+
+// ── HTML page ─────────────────────────────────────────────────────────────────
+
+func renderHTML(c *fiber.Ctx, p string) error {
+	headers, _ := collectHeaders(c)
+	hn := hostname()
+	ts := timestamp()
+
+	var rows strings.Builder
+	for _, h := range headers {
+		rows.WriteString(fmt.Sprintf("    <tr><td>%s</td><td>%s</td></tr>\n",
+			fiber.EscapeHTML(h.Key), fiber.EscapeHTML(h.Value)))
+	}
+
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>%s</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="container">
+  <h1>%s</h1>
+  <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></p>
+
+  <h2>Request</h2>
+  <table>
+    <tr><td>Method</td><td>%s</td></tr>
+    <tr><td>URL</td><td>%s</td></tr>
+    <tr><td>IP</td><td>%s</td></tr>
+    <tr><td>Protocol</td><td>%s</td></tr>
+    <tr><td>Host</td><td>%s</td></tr>
+    <tr><td>Timestamp</td><td>%s</td></tr>
+  </table>
+
+  <h2>Server</h2>
+  <table>
+    <tr><td>Hostname</td><td>%s</td></tr>
+    <tr><td>Port</td><td>%s</td></tr>
+  </table>
+
+  <h2>Headers</h2>
+  <table>
+%s  </table>
+
+  <div class="formats">
+    <a href="/" class="active">[HTML]</a>
+    <a href="/json">[JSON]</a>
+    <a href="/xml">[XML]</a>
+    <a href="/text">[Text]</a>
+  </div>
+
+  <footer>Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></footer>
+</div>
+</body>
+</html>`,
+		appName, appName,
+		fiber.EscapeHTML(c.Method()),
+		fiber.EscapeHTML(c.OriginalURL()),
+		fiber.EscapeHTML(c.IP()),
+		fiber.EscapeHTML(c.Protocol()),
+		fiber.EscapeHTML(c.Hostname()),
+		ts,
+		hn, p,
+		rows.String(),
+	)
+
+	c.Set(fiber.HeaderContentType, "text/html; charset=utf-8")
+	return c.SendString(html)
+}
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
+func handleRoot(p string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		return renderHTML(c, p)
+	}
+}
+
+func handleJSON(p string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		_, flat := collectHeaders(c)
+		resp := JSONResponse{
+			App:       appName,
+			Ferry:     true,
+			Timestamp: timestamp(),
+			Server: ServerInfo{
+				Hostname: hostname(),
+				Port:     p,
+			},
+			Request: RequestInfoJSON{
+				Method:   c.Method(),
+				URL:      c.OriginalURL(),
+				Protocol: c.Protocol(),
+				IP:       c.IP(),
+				Host:     c.Hostname(),
+				Headers:  flat,
+			},
+		}
+		return c.JSON(resp)
+	}
+}
+
+func handleXML(p string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		headers, _ := collectHeaders(c)
+		xmlHeaders := make([]XMLHeader, 0, len(headers))
+		for _, h := range headers {
+			xmlHeaders = append(xmlHeaders, XMLHeader{Key: h.Key, Value: h.Value})
+		}
+		resp := XMLResponse{
+			App:       appName,
+			Ferry:     true,
+			Timestamp: timestamp(),
+			Server: XMLServerInfo{
+				Hostname: hostname(),
+				Port:     p,
+			},
+			Request: XMLRequestInfo{
+				Method:   c.Method(),
+				URL:      c.OriginalURL(),
+				Protocol: c.Protocol(),
+				IP:       c.IP(),
+				Host:     c.Hostname(),
+				Headers:  XMLHeaders{Items: xmlHeaders},
+			},
+		}
+		out, err := xml.MarshalIndent(resp, "", "  ")
+		if err != nil {
+			return err
+		}
+		c.Set(fiber.HeaderContentType, "application/xml; charset=utf-8")
+		return c.SendString(xml.Header + string(out))
+	}
+}
+
+func handleText(p string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		headers, _ := collectHeaders(c)
+		hn := hostname()
+		ts := timestamp()
+
+		var sb strings.Builder
+		sb.WriteString("# " + appName + "\n\n")
+		sb.WriteString("## Request\n\n")
+		sb.WriteString(fmt.Sprintf("- Method:    %s\n", c.Method()))
+		sb.WriteString(fmt.Sprintf("- URL:       %s\n", c.OriginalURL()))
+		sb.WriteString(fmt.Sprintf("- IP:        %s\n", c.IP()))
+		sb.WriteString(fmt.Sprintf("- Protocol:  %s\n", c.Protocol()))
+		sb.WriteString(fmt.Sprintf("- Host:      %s\n", c.Hostname()))
+		sb.WriteString(fmt.Sprintf("- Timestamp: %s\n", ts))
+		sb.WriteString("\n## Server\n\n")
+		sb.WriteString(fmt.Sprintf("- Hostname: %s\n", hn))
+		sb.WriteString(fmt.Sprintf("- Port:     %s\n", p))
+		sb.WriteString("\n## Headers\n\n")
+		for _, h := range headers {
+			sb.WriteString(fmt.Sprintf("- %s: %s\n", h.Key, h.Value))
+		}
+		sb.WriteString("\n---\nDeployed with Ferry\n")
+
+		c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
+		return c.SendString(sb.String())
+	}
+}
+
+func handleHealth(c *fiber.Ctx) error {
+	c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
+	return c.SendString("ok")
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+func main() {
+	p := port()
+	addr := "0.0.0.0:" + p
+
+	app := fiber.New(fiber.Config{
+		AppName:               appName,
+		DisableStartupMessage: false,
+	})
+
+	// Serve style.css from the working directory
+	app.Static("/style.css", "./style.css")
+
+	app.Get("/", handleRoot(p))
+	app.Get("/json", handleJSON(p))
+	app.Get("/xml", handleXML(p))
+	app.Get("/text", handleText(p))
+	app.Get("/health", handleHealth)
+
+	log.Printf("%s listening on %s", appName, addr)
+	if err := app.Listen(addr); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}

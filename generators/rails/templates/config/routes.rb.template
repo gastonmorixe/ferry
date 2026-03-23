@@ -1,0 +1,7 @@
+Rails.application.routes.draw do
+  root  "info#index"
+  get   "json"   => "info#show_json"
+  get   "xml"    => "info#show_xml"
+  get   "text"   => "info#show_text"
+  get   "health" => "info#health"
+end

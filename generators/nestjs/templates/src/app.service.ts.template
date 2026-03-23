@@ -1,0 +1,177 @@
+import { Injectable } from '@nestjs/common'
+import { Request } from 'express'
+import { hostname } from 'os'
+
+export interface RequestInfo {
+  app: string
+  ferry: boolean
+  timestamp: string
+  server: {
+    hostname: string
+    port: number
+  }
+  request: {
+    method: string
+    url: string
+    protocol: string
+    ip: string
+    headers: Record<string, string>
+  }
+}
+
+@Injectable()
+export class AppService {
+  getRequestInfo(req: Request): RequestInfo {
+    const ip =
+      (req.headers['x-real-ip'] as string) ||
+      (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+      req.ip ||
+      ''
+
+    const headers: Record<string, string> = {}
+    for (const [key, val] of Object.entries(req.headers)) {
+      headers[key] = Array.isArray(val) ? val.join(', ') : (val ?? '')
+    }
+
+    return {
+      app: '{{APP_NAME}}',
+      ferry: true,
+      timestamp: new Date().toISOString(),
+      server: {
+        hostname: hostname(),
+        port: Number(process.env.PORT ?? {{APP_PORT}}),
+      },
+      request: {
+        method: req.method,
+        url: req.originalUrl,
+        protocol: req.protocol,
+        ip,
+        headers,
+      },
+    }
+  }
+
+  renderHtml(info: RequestInfo): string {
+    const headerRows = Object.entries(info.request.headers)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`)
+      .join('\n          ')
+
+    return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${esc(info.app)}</title>
+  <link rel="stylesheet" href="/public/style.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>${esc(info.app)}</h1>
+    <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry v{{FERRY_VERSION}}</a></p>
+
+    <h2>Request</h2>
+    <table><tbody>
+      <tr><td>method</td><td>${esc(info.request.method)}</td></tr>
+      <tr><td>url</td><td>${esc(info.request.url)}</td></tr>
+      <tr><td>protocol</td><td>${esc(info.request.protocol)}</td></tr>
+      <tr><td>client ip</td><td>${esc(info.request.ip)}</td></tr>
+    </tbody></table>
+
+    <h2>Headers</h2>
+    <table><tbody>
+          ${headerRows}
+    </tbody></table>
+
+    <h2>Server</h2>
+    <table><tbody>
+      <tr><td>hostname</td><td>${esc(info.server.hostname)}</td></tr>
+      <tr><td>port</td><td>${info.server.port}</td></tr>
+      <tr><td>time</td><td>${esc(info.timestamp)}</td></tr>
+    </tbody></table>
+
+    <div class="formats">
+      <a href="/" class="active">HTML</a>
+      <a href="/json">JSON</a>
+      <a href="/xml">XML</a>
+      <a href="/text">Text</a>
+    </div>
+
+    <footer><a href="https://github.com/gastonmorixe/ferry">Deployed with Ferry</a></footer>
+  </div>
+</body>
+</html>`
+  }
+
+  renderXml(info: RequestInfo): string {
+    const headerEntries = Object.entries(info.request.headers)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `    <header name="${esc(k)}">${esc(v)}</header>`)
+      .join('\n')
+
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<response>
+  <app>${esc(info.app)}</app>
+  <ferry>true</ferry>
+  <timestamp>${esc(info.timestamp)}</timestamp>
+  <server>
+    <hostname>${esc(info.server.hostname)}</hostname>
+    <port>${info.server.port}</port>
+  </server>
+  <request>
+    <method>${esc(info.request.method)}</method>
+    <url>${esc(info.request.url)}</url>
+    <protocol>${esc(info.request.protocol)}</protocol>
+    <ip>${esc(info.request.ip)}</ip>
+    <headers>
+${headerEntries}
+    </headers>
+  </request>
+</response>`
+  }
+
+  renderText(info: RequestInfo): string {
+    const headerLines = Object.entries(info.request.headers)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `  ${k}: ${v}`)
+      .join('\n')
+
+    return `# ${info.app}
+
+Deployed with Ferry v{{FERRY_VERSION}}
+
+## Request
+
+  method:   ${info.request.method}
+  url:      ${info.request.url}
+  protocol: ${info.request.protocol}
+  ip:       ${info.request.ip || '—'}
+
+## Headers
+
+${headerLines}
+
+## Server
+
+  hostname: ${info.server.hostname}
+  port:     ${info.server.port}
+  time:     ${info.timestamp}
+
+## Formats
+
+  HTML  /
+  JSON  /json
+  XML   /xml
+  Text  /text
+`
+  }
+}
+
+function esc(s: string): string {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}

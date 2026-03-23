@@ -1,0 +1,360 @@
+package main
+
+import (
+	"encoding/json"
+	"encoding/xml"
+	"fmt"
+	"html/template"
+	"log"
+	"net/http"
+	"os"
+	"sort"
+	"strings"
+	"time"
+)
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const appName = "{{APP_NAME}}"
+
+const defaultPort = "{{APP_PORT}}"
+
+// ── Data types ────────────────────────────────────────────────────────────────
+
+type RequestInfo struct {
+	Method    string
+	URL       string
+	IP        string
+	Protocol  string
+	Host      string
+	Hostname  string
+	Timestamp string
+	Headers   []Header
+}
+
+type Header struct {
+	Key   string
+	Value string
+}
+
+type JSONResponse struct {
+	App       string            `json:"app"`
+	Ferry     bool              `json:"ferry"`
+	Timestamp string            `json:"timestamp"`
+	Server    ServerInfo        `json:"server"`
+	Request   RequestInfoJSON   `json:"request"`
+}
+
+type ServerInfo struct {
+	Hostname string `json:"hostname"`
+	Port     string `json:"port"`
+}
+
+type RequestInfoJSON struct {
+	Method   string            `json:"method"`
+	URL      string            `json:"url"`
+	Protocol string            `json:"protocol"`
+	IP       string            `json:"ip"`
+	Host     string            `json:"host"`
+	Headers  map[string]string `json:"headers"`
+}
+
+type XMLResponse struct {
+	XMLName   xml.Name       `xml:"response"`
+	App       string         `xml:"app"`
+	Ferry     bool           `xml:"ferry"`
+	Timestamp string         `xml:"timestamp"`
+	Server    XMLServerInfo  `xml:"server"`
+	Request   XMLRequestInfo `xml:"request"`
+}
+
+type XMLServerInfo struct {
+	Hostname string `xml:"hostname"`
+	Port     string `xml:"port"`
+}
+
+type XMLRequestInfo struct {
+	Method   string     `xml:"method"`
+	URL      string     `xml:"url"`
+	Protocol string     `xml:"protocol"`
+	IP       string     `xml:"ip"`
+	Host     string     `xml:"host"`
+	Headers  XMLHeaders `xml:"headers"`
+}
+
+type XMLHeaders struct {
+	Items []XMLHeader `xml:"header"`
+}
+
+type XMLHeader struct {
+	Key   string `xml:"key,attr"`
+	Value string `xml:",chardata"`
+}
+
+// ── HTML template ─────────────────────────────────────────────────────────────
+
+const htmlTmpl = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.AppName}}</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="container">
+  <h1>{{.AppName}}</h1>
+  <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></p>
+
+  <h2>Request</h2>
+  <table>
+    <tr><td>Method</td><td>{{.Info.Method}}</td></tr>
+    <tr><td>URL</td><td>{{.Info.URL}}</td></tr>
+    <tr><td>IP</td><td>{{.Info.IP}}</td></tr>
+    <tr><td>Protocol</td><td>{{.Info.Protocol}}</td></tr>
+    <tr><td>Host</td><td>{{.Info.Host}}</td></tr>
+    <tr><td>Timestamp</td><td>{{.Info.Timestamp}}</td></tr>
+  </table>
+
+  <h2>Server</h2>
+  <table>
+    <tr><td>Hostname</td><td>{{.Info.Hostname}}</td></tr>
+    <tr><td>Port</td><td>{{.Port}}</td></tr>
+  </table>
+
+  <h2>Headers</h2>
+  <table>
+    {{range .Info.Headers}}<tr><td>{{.Key}}</td><td>{{.Value}}</td></tr>
+    {{end}}
+  </table>
+
+  <div class="formats">
+    <a href="/" class="active">[HTML]</a>
+    <a href="/json">[JSON]</a>
+    <a href="/xml">[XML]</a>
+    <a href="/text">[Text]</a>
+  </div>
+
+  <footer>Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></footer>
+</div>
+</body>
+</html>`
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func port() string {
+	if p := os.Getenv("PORT"); p != "" {
+		return p
+	}
+	return defaultPort
+}
+
+func hostname() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return h
+}
+
+func remoteIP(r *http.Request) string {
+	// Honour common proxy headers first.
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
+	}
+	if rip := r.Header.Get("X-Real-Ip"); rip != "" {
+		return rip
+	}
+	// Fall back to the TCP remote address (strips port).
+	addr := r.RemoteAddr
+	if i := strings.LastIndex(addr, ":"); i != -1 {
+		return addr[:i]
+	}
+	return addr
+}
+
+func protocol(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		return proto
+	}
+	return "http"
+}
+
+func collectHeaders(r *http.Request) ([]Header, map[string]string) {
+	keys := make([]string, 0, len(r.Header))
+	for k := range r.Header {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	list := make([]Header, 0, len(keys))
+	flat := make(map[string]string, len(keys))
+	for _, k := range keys {
+		v := strings.Join(r.Header[k], "; ")
+		list = append(list, Header{Key: k, Value: v})
+		flat[k] = v
+	}
+	return list, flat
+}
+
+func buildInfo(r *http.Request) RequestInfo {
+	headers, _ := collectHeaders(r)
+	return RequestInfo{
+		Method:    r.Method,
+		URL:       r.URL.String(),
+		IP:        remoteIP(r),
+		Protocol:  protocol(r),
+		Host:      r.Host,
+		Hostname:  hostname(),
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Headers:   headers,
+	}
+}
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
+func handleRoot(p string) http.HandlerFunc {
+	tmpl := template.Must(template.New("page").Parse(htmlTmpl))
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		data := struct {
+			AppName string
+			Info    RequestInfo
+			Port    string
+		}{
+			AppName: appName,
+			Info:    buildInfo(r),
+			Port:    p,
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := tmpl.Execute(w, data); err != nil {
+			log.Printf("template error: %v", err)
+		}
+	}
+}
+
+func handleJSON(p string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		info := buildInfo(r)
+		_, flat := collectHeaders(r)
+		resp := JSONResponse{
+			App:       appName,
+			Ferry:     true,
+			Timestamp: info.Timestamp,
+			Server: ServerInfo{
+				Hostname: info.Hostname,
+				Port:     p,
+			},
+			Request: RequestInfoJSON{
+				Method:   info.Method,
+				URL:      info.URL,
+				Protocol: info.Protocol,
+				IP:       info.IP,
+				Host:     info.Host,
+				Headers:  flat,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(resp); err != nil {
+			log.Printf("json encode error: %v", err)
+		}
+	}
+}
+
+func handleXML(p string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		info := buildInfo(r)
+		headers, _ := collectHeaders(r)
+		xmlHeaders := make([]XMLHeader, 0, len(headers))
+		for _, h := range headers {
+			xmlHeaders = append(xmlHeaders, XMLHeader{Key: h.Key, Value: h.Value})
+		}
+		resp := XMLResponse{
+			App:       appName,
+			Ferry:     true,
+			Timestamp: info.Timestamp,
+			Server: XMLServerInfo{
+				Hostname: info.Hostname,
+				Port:     p,
+			},
+			Request: XMLRequestInfo{
+				Method:   info.Method,
+				URL:      info.URL,
+				Protocol: info.Protocol,
+				IP:       info.IP,
+				Host:     info.Host,
+				Headers:  XMLHeaders{Items: xmlHeaders},
+			},
+		}
+		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+		fmt.Fprint(w, xml.Header)
+		enc := xml.NewEncoder(w)
+		enc.Indent("", "  ")
+		if err := enc.Encode(resp); err != nil {
+			log.Printf("xml encode error: %v", err)
+		}
+	}
+}
+
+func handleText(p string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		info := buildInfo(r)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+		var sb strings.Builder
+		sb.WriteString("# " + appName + "\n\n")
+		sb.WriteString("## Request\n\n")
+		sb.WriteString(fmt.Sprintf("- Method:    %s\n", info.Method))
+		sb.WriteString(fmt.Sprintf("- URL:       %s\n", info.URL))
+		sb.WriteString(fmt.Sprintf("- IP:        %s\n", info.IP))
+		sb.WriteString(fmt.Sprintf("- Protocol:  %s\n", info.Protocol))
+		sb.WriteString(fmt.Sprintf("- Host:      %s\n", info.Host))
+		sb.WriteString(fmt.Sprintf("- Timestamp: %s\n", info.Timestamp))
+		sb.WriteString("\n## Server\n\n")
+		sb.WriteString(fmt.Sprintf("- Hostname: %s\n", info.Hostname))
+		sb.WriteString(fmt.Sprintf("- Port:     %s\n", p))
+		sb.WriteString("\n## Headers\n\n")
+		for _, h := range info.Headers {
+			sb.WriteString(fmt.Sprintf("- %s: %s\n", h.Key, h.Value))
+		}
+		sb.WriteString("\n---\nDeployed with Ferry\n")
+		fmt.Fprint(w, sb.String())
+	}
+}
+
+func handleHealth(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, "ok")
+}
+
+func handleStyleCSS(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "style.css")
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+func main() {
+	p := port()
+	addr := "0.0.0.0:" + p
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleRoot(p))
+	mux.HandleFunc("/json", handleJSON(p))
+	mux.HandleFunc("/xml", handleXML(p))
+	mux.HandleFunc("/text", handleText(p))
+	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/style.css", handleStyleCSS)
+
+	log.Printf("%s listening on %s", appName, addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}

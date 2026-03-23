@@ -1,0 +1,182 @@
+import socket
+import datetime
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
+
+app = FastAPI(title="{{APP_NAME}}")
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+def _build_context(request: Request) -> dict:
+    hostname = socket.gethostname()
+    return {
+        "app": "{{APP_NAME}}",
+        "ferry": True,
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "server": {
+            "hostname": hostname,
+            "port": {{APP_PORT}},
+        },
+        "request": {
+            "method": request.method,
+            "url": str(request.url),
+            "protocol": request.url.scheme,
+            "ip": request.client.host if request.client else "unknown",
+            "headers": dict(request.headers),
+        },
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    ctx = _build_context(request)
+    srv = ctx["server"]
+    req = ctx["request"]
+
+    header_rows = "".join(
+        f"<tr><td>{k}</td><td>{v}</td></tr>"
+        for k, v in req["headers"].items()
+    )
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{ctx["app"]}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>{ctx["app"]}</h1>
+    <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></p>
+
+    <h2>Request</h2>
+    <table>
+      <tr><td>Method</td><td>{req["method"]}</td></tr>
+      <tr><td>URL</td><td>{req["url"]}</td></tr>
+      <tr><td>Protocol</td><td>{req["protocol"]}</td></tr>
+      <tr><td>Client IP</td><td>{req["ip"]}</td></tr>
+      <tr><td>Timestamp</td><td>{ctx["timestamp"]}</td></tr>
+    </table>
+
+    <h2>Server</h2>
+    <table>
+      <tr><td>Hostname</td><td>{srv["hostname"]}</td></tr>
+      <tr><td>Port</td><td>{srv["port"]}</td></tr>
+    </table>
+
+    <h2>Headers</h2>
+    <table>
+      {header_rows}
+    </table>
+
+    <div class="formats">
+      <a href="/" class="active">[HTML]</a>
+      <a href="/json">[JSON]</a>
+      <a href="/xml">[XML]</a>
+      <a href="/text">[Text]</a>
+    </div>
+
+    <footer>Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></footer>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/json")
+async def json_view(request: Request):
+    ctx = _build_context(request)
+    return JSONResponse(content=ctx)
+
+
+@app.get("/xml")
+async def xml_view(request: Request):
+    ctx = _build_context(request)
+    srv = ctx["server"]
+    req = ctx["request"]
+
+    header_xml = "".join(
+        f"    <header name={_xml_attr(k)}>{_xml_escape(v)}</header>\n"
+        for k, v in req["headers"].items()
+    )
+
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<response>
+  <app>{_xml_escape(ctx["app"])}</app>
+  <ferry>true</ferry>
+  <timestamp>{_xml_escape(ctx["timestamp"])}</timestamp>
+  <server>
+    <hostname>{_xml_escape(srv["hostname"])}</hostname>
+    <port>{srv["port"]}</port>
+  </server>
+  <request>
+    <method>{_xml_escape(req["method"])}</method>
+    <url>{_xml_escape(req["url"])}</url>
+    <protocol>{_xml_escape(req["protocol"])}</protocol>
+    <ip>{_xml_escape(req["ip"])}</ip>
+    <headers>
+{header_xml}    </headers>
+  </request>
+</response>"""
+    return Response(content=xml, media_type="application/xml")
+
+
+@app.get("/text")
+async def text_view(request: Request):
+    ctx = _build_context(request)
+    srv = ctx["server"]
+    req = ctx["request"]
+
+    header_lines = "\n".join(
+        f"  {k}: {v}" for k, v in req["headers"].items()
+    )
+
+    text = f"""# {ctx["app"]}
+
+## Request
+  Method:    {req["method"]}
+  URL:       {req["url"]}
+  Protocol:  {req["protocol"]}
+  Client IP: {req["ip"]}
+  Timestamp: {ctx["timestamp"]}
+
+## Server
+  Hostname: {srv["hostname"]}
+  Port:     {srv["port"]}
+
+## Headers
+{header_lines}
+
+---
+Deployed with Ferry <https://github.com/gastonmorixe/ferry>
+Formats: / | /json | /xml | /text
+"""
+    return PlainTextResponse(content=text)
+
+
+@app.get("/health")
+async def health():
+    return PlainTextResponse(content="ok")
+
+
+# ---------------------------------------------------------------------------
+# XML helpers
+# ---------------------------------------------------------------------------
+
+def _xml_escape(s: str) -> str:
+    return (
+        s.replace("&", "&amp;")
+         .replace("<", "&lt;")
+         .replace(">", "&gt;")
+         .replace('"', "&quot;")
+         .replace("'", "&apos;")
+    )
+
+
+def _xml_attr(s: str) -> str:
+    return f'"{_xml_escape(s)}"'

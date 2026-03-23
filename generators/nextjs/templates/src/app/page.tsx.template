@@ -1,0 +1,79 @@
+import { headers } from 'next/headers'
+import { hostname } from 'os'
+
+export const dynamic = 'force-dynamic'
+
+function getClientIp(hdrs: Awaited<ReturnType<typeof headers>>): string {
+  return (
+    hdrs.get('x-real-ip') ||
+    hdrs.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    '—'
+  )
+}
+
+export default async function Page() {
+  const hdrs = await headers()
+  const ip = getClientIp(hdrs)
+  const host = hdrs.get('host') || '—'
+  const method = 'GET'
+  const proto = hdrs.get('x-forwarded-proto') || 'http'
+  const url = hdrs.get('x-forwarded-uri') || '/'
+  const serverHost = hostname()
+  const now = new Date().toISOString()
+
+  const headerRows: [string, string][] = []
+  hdrs.forEach((value, key) => {
+    headerRows.push([key, value])
+  })
+  headerRows.sort((a, b) => a[0].localeCompare(b[0]))
+
+  return (
+    <div className="container">
+      <h1>{{APP_NAME}}</h1>
+      <p className="subtitle">
+        Deployed with{' '}
+        <a href="https://github.com/gastonmorixe/ferry">Ferry v{{FERRY_VERSION}}</a>
+      </p>
+
+      <h2>Request</h2>
+      <table>
+        <tbody>
+          <tr><td>method</td><td>{method}</td></tr>
+          <tr><td>url</td><td>{url}</td></tr>
+          <tr><td>protocol</td><td>{proto}</td></tr>
+          <tr><td>host</td><td>{host}</td></tr>
+          <tr><td>client ip</td><td>{ip}</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Headers</h2>
+      <table>
+        <tbody>
+          {headerRows.map(([k, v]) => (
+            <tr key={k}><td>{k}</td><td>{v}</td></tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h2>Server</h2>
+      <table>
+        <tbody>
+          <tr><td>hostname</td><td>{serverHost}</td></tr>
+          <tr><td>port</td><td>{{APP_PORT}}</td></tr>
+          <tr><td>time</td><td>{now}</td></tr>
+        </tbody>
+      </table>
+
+      <div className="formats">
+        <a href="/" className="active">HTML</a>
+        <a href="/json">JSON</a>
+        <a href="/xml">XML</a>
+        <a href="/text">Text</a>
+      </div>
+
+      <footer>
+        <a href="https://github.com/gastonmorixe/ferry">Deployed with Ferry</a>
+      </footer>
+    </div>
+  )
+}

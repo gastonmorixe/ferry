@@ -88,12 +88,13 @@ The following files were created:
 
 - `docker-compose.yml`: cloudflared + dokku services
 - `tunnels/providers/cloudflare/config.yml`: tunnel ingress rules (gitignored, auto-generated from TUNNEL_ID if missing)
-- `tunnels/providers/cloudflare/config.yml.example`: template for config.yml
 - `~/.cloudflared/<tunnel-id>.json`: tunnel credentials (mounted into container via docker-compose, never copied into project)
 - `.env`: TUNNEL_ID, DOKKU_HOSTNAME, CF_API_TOKEN, CF_ACCOUNT_ID
 - `.env.example`: template for .env
 - `.gitignore`: keeps secrets out of git
 - `apps/test-app/`: Node/Express test application
+
+Ferry no longer keeps a checked-in `config.yml.example`; it generates a minimal `config.yml` automatically when the tunnel config is missing.
 
 See the main README for the full file structure.
 

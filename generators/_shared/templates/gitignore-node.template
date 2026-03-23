@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.next/
+.nuxt/
+build/
+.env
+.env.*
+*.log
+.DS_Store

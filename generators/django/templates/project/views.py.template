@@ -1,0 +1,165 @@
+import json
+import socket
+from datetime import datetime, timezone
+
+from django.http import HttpResponse, JsonResponse
+
+
+APP_NAME = "{{APP_NAME}}"
+APP_PORT = {{APP_PORT}}
+FERRY_VERSION = "{{FERRY_VERSION}}"
+
+
+def _request_data(request):
+    """Collect request info into the standard Ferry schema."""
+    headers = {k: v for k, v in request.headers.items()}
+    return {
+        "app": APP_NAME,
+        "ferry": True,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "server": {
+            "hostname": socket.gethostname(),
+            "port": APP_PORT,
+        },
+        "request": {
+            "method": request.method,
+            "url": request.get_full_path(),
+            "protocol": request.META.get("SERVER_PROTOCOL", "HTTP/1.1"),
+            "ip": request.META.get("HTTP_X_FORWARDED_FOR", request.META.get("REMOTE_ADDR", "")).split(",")[0].strip(),
+            "headers": headers,
+        },
+    }
+
+
+def index(request):
+    d = _request_data(request)
+    req = d["request"]
+    srv = d["server"]
+
+    rows_request = [
+        ("Method",   req["method"]),
+        ("URL",      req["url"]),
+        ("Protocol", req["protocol"]),
+        ("IP",       req["ip"]),
+    ]
+    rows_server = [
+        ("Hostname",  srv["hostname"]),
+        ("Port",      str(srv["port"])),
+        ("Timestamp", d["timestamp"]),
+        ("Ferry",     f"v{FERRY_VERSION}"),
+    ]
+
+    def table(rows):
+        cells = "".join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in rows)
+        return f"<table>{cells}</table>"
+
+    def header_table(headers):
+        cells = "".join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in headers.items())
+        return f"<table>{cells}</table>"
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{APP_NAME}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container">
+  <h1>{APP_NAME}</h1>
+  <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a> v{FERRY_VERSION} &middot; Django</p>
+
+  <h2>Request</h2>
+  {table(rows_request)}
+
+  <h2>Headers</h2>
+  {header_table(req["headers"])}
+
+  <h2>Server</h2>
+  {table(rows_server)}
+
+  <div class="formats">
+    <a href="/" class="active">HTML</a>
+    <a href="/json">JSON</a>
+    <a href="/xml">XML</a>
+    <a href="/text">Text</a>
+  </div>
+
+  <footer>
+    <a href="https://github.com/gastonmorixe/ferry">Deployed with Ferry</a>
+  </footer>
+</div>
+</body>
+</html>"""
+    return HttpResponse(html)
+
+
+def json_view(request):
+    return JsonResponse(_request_data(request))
+
+
+def xml_view(request):
+    d = _request_data(request)
+    req = d["request"]
+    srv = d["server"]
+
+    header_xml = "\n    ".join(
+        f"<header><name>{k}</name><value>{v}</value></header>"
+        for k, v in req["headers"].items()
+    )
+
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<response>
+  <app>{d["app"]}</app>
+  <ferry>true</ferry>
+  <timestamp>{d["timestamp"]}</timestamp>
+  <server>
+    <hostname>{srv["hostname"]}</hostname>
+    <port>{srv["port"]}</port>
+  </server>
+  <request>
+    <method>{req["method"]}</method>
+    <url>{req["url"]}</url>
+    <protocol>{req["protocol"]}</protocol>
+    <ip>{req["ip"]}</ip>
+    <headers>
+    {header_xml}
+    </headers>
+  </request>
+</response>"""
+    return HttpResponse(xml, content_type="application/xml")
+
+
+def text_view(request):
+    d = _request_data(request)
+    req = d["request"]
+    srv = d["server"]
+
+    header_lines = "\n".join(f"  {k}: {v}" for k, v in req["headers"].items())
+
+    text = f"""# {APP_NAME}
+
+## Request
+- Method:   {req["method"]}
+- URL:      {req["url"]}
+- Protocol: {req["protocol"]}
+- IP:       {req["ip"]}
+
+## Headers
+{header_lines}
+
+## Server
+- Hostname:  {srv["hostname"]}
+- Port:      {srv["port"]}
+- Timestamp: {d["timestamp"]}
+
+---
+Deployed with Ferry v{FERRY_VERSION}
+https://github.com/gastonmorixe/ferry
+"""
+    return HttpResponse(text, content_type="text/plain; charset=utf-8")
+
+
+def health(request):
+    return HttpResponse("ok", content_type="text/plain")

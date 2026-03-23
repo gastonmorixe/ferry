@@ -1,0 +1,5 @@
+tunnel: test-tunnel-id
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - service: http_status:404

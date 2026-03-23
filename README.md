@@ -6,9 +6,9 @@
 
 <p align="center"><strong>Self-hosted PaaS scaffold for self-hosting web apps for free and zero open ports</strong></p>
 
-Ferry combines 🐳 [Dokku](https://dokku.com) and 🌩️ [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) into a single workflow. 
+Ferry combines 🐳 [Dokku](https://dokku.com) and 🌩️ [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) into a single workflow.
 
-One command takes a GitHub repo to a live HTTPS site with automatic 🌎 **DNS**, 🛬 **ingress routing**, and 🔒 **TLS termination** at Cloudflare's edge making your server's IP is **never exposed and 100% free self-hosting** even surviving ISP dynamic IP changes.
+It can scaffold a starter app with `ferry new`, or take an existing GitHub repo to a live HTTPS site with automatic 🌎 **DNS**, 🛬 **ingress routing**, and 🔒 **TLS termination** at Cloudflare's edge, so your server IP is **never exposed** while staying **100% free to self-host** even on dynamic residential IPs.
 
 ```bash
 $ ferry deploy myapp -r owner/repo -H app.example.com -y
@@ -26,6 +26,7 @@ $ ferry deploy myapp -r owner/repo -H app.example.com -y
 - [Examples](#examples)
 - [Configuration](#configuration)
 - [Documentation](#documentation)
+- [Development](#development)
 - [Project Structure](#project-structure)
 - [Requirements](#requirements)
 - [License](#license)
@@ -35,6 +36,7 @@ $ ferry deploy myapp -r owner/repo -H app.example.com -y
 ## Features
 
 - 🛬 **Zero open ports.** No 80, no 443, no public IP. All traffic flows through Cloudflare's encrypted tunnel.
+- 🧱 **Built-in app scaffolding.** `ferry new` generates starter apps for Express, FastAPI, Next.js, Rails, Go, Rust, React, and more.
 - 🚀 **One-command deploy.** `ferry deploy` handles app creation, DNS, ingress, tunnel restart, git push, and verification.
 - 🧑‍💻 **Git push deploys.** Standard `git push dokku main:master` workflow, just like Heroku.
 - 🌎 **Automatic DNS.** CNAME records created via Cloudflare API for any domain in your account.
@@ -96,9 +98,14 @@ docker compose up -d
 ferry login
 ```
 
-### 5. Deploy your first app
+### 5. Create or deploy your first app
 
 ```bash
+# Scaffold a new app locally, then deploy it
+ferry new myapp -t express
+ferry deploy myapp
+
+# Or deploy an existing GitHub repo directly
 ferry deploy myapp -r owner/repo -H myapp.example.com
 ```
 
@@ -114,6 +121,7 @@ Run `ferry` with no arguments for an interactive arrow-key menu, or pass a comma
 
 ```
 ferry                    Interactive menu
+ferry new [<name>]       Create a new app from a template
 ferry login              Set up Cloudflare API access
 ferry deploy [<name>]    Deploy a new app
 ferry remove [<name>]    Remove an app + DNS + ingress
@@ -133,6 +141,17 @@ ferry help               Show help
 |---|---|
 | `-y` / `--yes` | Skip all confirmations (non-interactive mode) |
 | `-h` / `--help` | Show help |
+
+**New:**
+
+| Flag | Effect |
+|---|---|
+| `-t` / `--template` | Generator template to use (`express`, `nextjs`, `fastapi`, etc.) |
+| `-o` / `--output` | Output directory (default: `apps/<name>` or `$FERRY_APPS_DIR/<name>`) |
+| `-p` / `--port` | Override the template's default port |
+| `--deploy` | Generate and immediately chain into `ferry deploy` |
+| `--no-deploy` | Skip the deploy prompt after generation |
+| `-l` / `--list` | List available templates and exit |
 
 **Deploy:**
 
@@ -156,6 +175,18 @@ ferry help               Show help
 ## Examples
 
 ```bash
+# List built-in templates
+ferry new --list
+
+# Scaffold a new app into apps/myapp
+ferry new myapp -t express -y
+
+# Scaffold and immediately deploy
+ferry new myapp -t fastapi --deploy -y
+
+# Scaffold into a custom directory
+ferry new myapp -t nextjs -o ~/projects/myapp -y
+
 # Deploy from GitHub (clone, detect port, create DNS, push, verify)
 ferry deploy myapp -r owner/repo -H app.example.com -y
 
@@ -216,6 +247,8 @@ Without an API token, DNS creation falls back to zone-scoped origin certs via `c
 
 All commands support `-y` for unattended use. The 256-color TUI degrades gracefully to 16-color or plain text when piped. Confirmation prompts auto-decline when stdin is not a TTY, making the script safe in pipelines.
 
+Generated and cloned app sources default to `apps/<name>`. Set `FERRY_APPS_DIR` to redirect that location globally.
+
 ---
 
 ## Documentation
@@ -230,6 +263,49 @@ Detailed guides in [`docs/`](docs/):
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and solutions |
 | [Initial Setup](docs/initial-setup.md) | First-time server setup reference |
 | [Cloudflare LLM Docs](docs/cloudflare-llms-index.md) | Cloudflare developer doc links |
+| [Proposal: ferry new](docs/proposal-ferry-new.md) | Draft design notes for the scaffold/generator system |
+
+---
+
+## Development
+
+Ferry now has a repo-level development workflow for bootstrapping dependencies, linting Bash, and running tests.
+
+### Required dev tools
+
+- `git`
+- `make`
+- `jq`
+- `python3`
+- `python3 -m pip` with [requirements-dev.txt](requirements-dev.txt)
+- `bats`
+- `shellcheck`
+
+### Optional tools
+
+- `docker` for deploy/status/reload/remove flows
+- `gh` for `ferry deploy --repo ...`
+
+### Bootstrap and verify
+
+```bash
+git submodule update --init --recursive
+make bootstrap
+make lint
+make test
+make check
+```
+
+What each target does:
+
+- `make bootstrap` initializes submodules and verifies the local dev toolchain.
+- `make lint` runs `shellcheck` against Ferry-owned shell code only.
+- `make test` runs the unit, integration, and generator Bats suites.
+- `make check` runs lint and tests together.
+
+The Bats helper libraries are vendored as git submodules in [test/test_helper](test/test_helper), so a fresh clone must initialize submodules before tests will pass.
+
+CI is defined in [.github/workflows/ci.yml](.github/workflows/ci.yml) and runs the same bootstrap, lint, and test flow on every push and pull request.
 
 ---
 
@@ -244,18 +320,27 @@ ferry/
 ├── .gitignore
 ├── README.md
 ├── CHANGELOG.md
+├── Makefile
+├── .gitmodules
+├── requirements-dev.txt
 ├── docs/
 │   ├── deploying-apps.md
 │   ├── deploy-guide-github-to-live.md
 │   ├── architecture.md
 │   ├── troubleshooting.md
 │   ├── initial-setup.md
-│   └── cloudflare-llms-index.md
+│   ├── cloudflare-llms-index.md
+│   └── proposal-ferry-new.md
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── scripts/                        # Dev bootstrap, lint, and test entry points
+├── generators/                     # Built-in app generators for ferry new
+├── test/                           # Bats unit, integration, and generator tests
 ├── tunnels/
 │   └── providers/
 │       └── cloudflare/
 │           ├── config.yml          # Tunnel ingress rules (gitignored)
-│           ├── config.yml.example
 │           └── *.cert              # Zone-scoped origin certs (gitignored)
 └── apps/                           # App source directories (gitignored)
 ```

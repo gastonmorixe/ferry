@@ -1,0 +1,52 @@
+import { headers } from 'next/headers'
+import { hostname } from 'os'
+
+export const dynamic = 'force-dynamic'
+
+export async function GET() {
+  const hdrs = await headers()
+  const ip =
+    hdrs.get('x-real-ip') ||
+    hdrs.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    ''
+
+  const headerLines: string[] = []
+  hdrs.forEach((value, key) => {
+    headerLines.push(`  ${key}: ${value}`)
+  })
+  headerLines.sort()
+
+  const text = `# {{APP_NAME}}
+
+Deployed with Ferry v{{FERRY_VERSION}}
+
+## Request
+
+  method:   GET
+  url:      ${hdrs.get('x-forwarded-uri') || '/text'}
+  protocol: ${hdrs.get('x-forwarded-proto') || 'http'}
+  host:     ${hdrs.get('host') || '—'}
+  ip:       ${ip || '—'}
+
+## Headers
+
+${headerLines.join('\n')}
+
+## Server
+
+  hostname: ${hostname()}
+  port:     {{APP_PORT}}
+  time:     ${new Date().toISOString()}
+
+## Formats
+
+  HTML  /
+  JSON  /json
+  XML   /xml
+  Text  /text
+`
+
+  return new Response(text, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  })
+}

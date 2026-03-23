@@ -1,0 +1,16 @@
+{
+  "app": "{{APP_NAME}}",
+  "ferry": true,
+  "timestamp": "",
+  "server": {
+    "hostname": "",
+    "port": 0
+  },
+  "request": {
+    "method": "",
+    "url": "",
+    "protocol": "",
+    "ip": "",
+    "headers": {}
+  }
+}

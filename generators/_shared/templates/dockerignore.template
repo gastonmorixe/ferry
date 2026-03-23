@@ -1,0 +1,13 @@
+.git
+.gitignore
+.dockerignore
+.env
+.env.*
+*.md
+LICENSE
+node_modules
+__pycache__
+.venv
+target
+tmp
+log

@@ -1,0 +1,117 @@
+require "socket"
+
+class InfoController < ApplicationController
+  APP_NAME      = "{{APP_NAME}}"
+  APP_PORT      = {{APP_PORT}}
+  FERRY_VERSION = "{{FERRY_VERSION}}"
+
+  def index
+    @data = request_data
+    # renders app/views/info/index.html.erb
+  end
+
+  def show_json
+    render json: request_data
+  end
+
+  def show_xml
+    d   = request_data
+    req = d[:request]
+    srv = d[:server]
+
+    header_xml = req[:headers].map do |k, v|
+      "    <header><name>#{CGI.escapeHTML(k)}</name><value>#{CGI.escapeHTML(v.to_s)}</value></header>"
+    end.join("\n")
+
+    xml = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <response>
+        <app>#{CGI.escapeHTML(d[:app])}</app>
+        <ferry>true</ferry>
+        <timestamp>#{d[:timestamp]}</timestamp>
+        <server>
+          <hostname>#{CGI.escapeHTML(srv[:hostname])}</hostname>
+          <port>#{srv[:port]}</port>
+        </server>
+        <request>
+          <method>#{req[:method]}</method>
+          <url>#{CGI.escapeHTML(req[:url])}</url>
+          <protocol>#{req[:protocol]}</protocol>
+          <ip>#{CGI.escapeHTML(req[:ip])}</ip>
+          <headers>
+      #{header_xml}
+          </headers>
+        </request>
+      </response>
+    XML
+
+    render plain: xml, content_type: "application/xml"
+  end
+
+  def show_text
+    d   = request_data
+    req = d[:request]
+    srv = d[:server]
+
+    header_lines = req[:headers].map { |k, v| "  #{k}: #{v}" }.join("\n")
+
+    text = <<~TEXT
+      # #{d[:app]}
+
+      ## Request
+      - Method:   #{req[:method]}
+      - URL:      #{req[:url]}
+      - Protocol: #{req[:protocol]}
+      - IP:       #{req[:ip]}
+
+      ## Headers
+      #{header_lines}
+
+      ## Server
+      - Hostname:  #{srv[:hostname]}
+      - Port:      #{srv[:port]}
+      - Timestamp: #{d[:timestamp]}
+
+      ---
+      Deployed with Ferry v#{FERRY_VERSION}
+      https://github.com/gastonmorixe/ferry
+    TEXT
+
+    render plain: text, content_type: "text/plain; charset=utf-8"
+  end
+
+  def health
+    render plain: "ok", content_type: "text/plain"
+  end
+
+  private
+
+  def request_data
+    headers = {}
+    request.headers.each do |k, v|
+      next unless k.start_with?("HTTP_") || k.in?(%w[CONTENT_TYPE CONTENT_LENGTH])
+      name = k.start_with?("HTTP_") ? k[5..].split("_").map(&:capitalize).join("-") : k.split("_").map(&:capitalize).join("-")
+      headers[name] = v.to_s
+    end
+
+    ip = request.env["HTTP_X_FORWARDED_FOR"]&.split(",")&.first&.strip ||
+         request.remote_ip.to_s
+
+    {
+      app:       APP_NAME,
+      ferry:     true,
+      timestamp: Time.now.utc.iso8601,
+      server: {
+        hostname: Socket.gethostname,
+        port:     APP_PORT,
+      },
+      request: {
+        method:   request.method,
+        url:      request.original_url,
+        protocol: request.env["SERVER_PROTOCOL"] || "HTTP/1.1",
+        ip:       ip,
+        headers:  headers,
+      },
+    }
+  end
+end

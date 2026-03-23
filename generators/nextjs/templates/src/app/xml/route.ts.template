@@ -1,0 +1,47 @@
+import { headers } from 'next/headers'
+import { hostname } from 'os'
+
+export const dynamic = 'force-dynamic'
+
+export async function GET() {
+  const hdrs = await headers()
+  const ip =
+    hdrs.get('x-real-ip') ||
+    hdrs.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    ''
+
+  const headerEntries: string[] = []
+  hdrs.forEach((value, key) => {
+    const escapedKey = key.replace(/[<>&"']/g, (c) =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c] ?? c)
+    )
+    const escapedValue = value.replace(/[<>&"']/g, (c) =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c] ?? c)
+    )
+    headerEntries.push(`    <header name="${escapedKey}">${escapedValue}</header>`)
+  })
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<response>
+  <app>{{APP_NAME}}</app>
+  <ferry>true</ferry>
+  <timestamp>${new Date().toISOString()}</timestamp>
+  <server>
+    <hostname>${hostname()}</hostname>
+    <port>{{APP_PORT}}</port>
+  </server>
+  <request>
+    <method>GET</method>
+    <url>${hdrs.get('x-forwarded-uri') || '/xml'}</url>
+    <protocol>${hdrs.get('x-forwarded-proto') || 'http'}</protocol>
+    <ip>${ip}</ip>
+    <headers>
+${headerEntries.join('\n')}
+    </headers>
+  </request>
+</response>`
+
+  return new Response(xml, {
+    headers: { 'Content-Type': 'application/xml; charset=utf-8' },
+  })
+}

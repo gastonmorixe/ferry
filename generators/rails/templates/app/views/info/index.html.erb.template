@@ -1,0 +1,54 @@
+<%
+  req = @data[:request]
+  srv = @data[:server]
+  d   = @data
+%>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title><%= d[:app] %></title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="container">
+  <h1><%= d[:app] %></h1>
+  <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a> v<%= InfoController::FERRY_VERSION %> &middot; Rails</p>
+
+  <h2>Request</h2>
+  <table>
+    <tr><td>Method</td><td><%= req[:method] %></td></tr>
+    <tr><td>URL</td><td><%= req[:url] %></td></tr>
+    <tr><td>Protocol</td><td><%= req[:protocol] %></td></tr>
+    <tr><td>IP</td><td><%= req[:ip] %></td></tr>
+  </table>
+
+  <h2>Headers</h2>
+  <table>
+    <% req[:headers].each do |k, v| %>
+      <tr><td><%= k %></td><td><%= v %></td></tr>
+    <% end %>
+  </table>
+
+  <h2>Server</h2>
+  <table>
+    <tr><td>Hostname</td><td><%= srv[:hostname] %></td></tr>
+    <tr><td>Port</td><td><%= srv[:port] %></td></tr>
+    <tr><td>Timestamp</td><td><%= d[:timestamp] %></td></tr>
+    <tr><td>Ferry</td><td>v<%= InfoController::FERRY_VERSION %></td></tr>
+  </table>
+
+  <div class="formats">
+    <a href="/" class="active">HTML</a>
+    <a href="/json">JSON</a>
+    <a href="/xml">XML</a>
+    <a href="/text">Text</a>
+  </div>
+
+  <footer>
+    <a href="https://github.com/gastonmorixe/ferry">Deployed with Ferry</a>
+  </footer>
+</div>
+</body>
+</html>

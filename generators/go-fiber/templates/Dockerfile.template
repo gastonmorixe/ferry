@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1
+
+# ── Build stage ──────────────────────────────────────────────────────────────
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /build
+
+COPY go.mod ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o server .
+
+# ── Run stage ─────────────────────────────────────────────────────────────────
+FROM alpine:3.21
+
+WORKDIR /app
+
+COPY --from=builder /build/server ./server
+COPY style.css ./style.css
+
+EXPOSE {{APP_PORT}}
+
+ENTRYPOINT ["/app/server"]

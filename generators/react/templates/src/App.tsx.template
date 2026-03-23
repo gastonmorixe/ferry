@@ -1,0 +1,66 @@
+import './App.css'
+
+function App() {
+  const loc = window.location
+
+  return (
+    <div className="container">
+      <h1>{{APP_NAME}}</h1>
+      <p className="subtitle">
+        Deployed with{' '}
+        <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noreferrer">
+          Ferry v{{FERRY_VERSION}}
+        </a>
+      </p>
+
+      <h2>Location</h2>
+      <table>
+        <tbody>
+          <tr><td>href</td><td>{loc.href}</td></tr>
+          <tr><td>pathname</td><td>{loc.pathname}</td></tr>
+          <tr><td>search</td><td>{loc.search || '—'}</td></tr>
+          <tr><td>hash</td><td>{loc.hash || '—'}</td></tr>
+          <tr><td>origin</td><td>{loc.origin}</td></tr>
+          <tr><td>protocol</td><td>{loc.protocol}</td></tr>
+          <tr><td>host</td><td>{loc.host}</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Navigator</h2>
+      <table>
+        <tbody>
+          <tr><td>userAgent</td><td>{navigator.userAgent}</td></tr>
+          <tr><td>language</td><td>{navigator.language}</td></tr>
+          <tr><td>languages</td><td>{navigator.languages.join(', ')}</td></tr>
+          <tr><td>platform</td><td>{navigator.platform}</td></tr>
+          <tr><td>cookieEnabled</td><td>{String(navigator.cookieEnabled)}</td></tr>
+          <tr><td>onLine</td><td>{String(navigator.onLine)}</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Screen</h2>
+      <table>
+        <tbody>
+          <tr><td>screen</td><td>{screen.width} &times; {screen.height}</td></tr>
+          <tr><td>viewport</td><td>{window.innerWidth} &times; {window.innerHeight}</td></tr>
+          <tr><td>devicePixelRatio</td><td>{window.devicePixelRatio}</td></tr>
+          <tr><td>colorDepth</td><td>{screen.colorDepth}-bit</td></tr>
+        </tbody>
+      </table>
+
+      <div className="note">
+        Server-side info (IP address, request headers) is not available from a
+        static SPA — there is no server to read them. Deploy a server-side
+        generator (Next.js, NestJS, Express) to see those fields.
+      </div>
+
+      <footer>
+        <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noreferrer">
+          Deployed with Ferry
+        </a>
+      </footer>
+    </div>
+  )
+}
+
+export default App

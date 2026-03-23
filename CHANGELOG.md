@@ -2,6 +2,44 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.6.0] - 2026-03-23
+
+### Added
+- **`ferry new` command.** Scaffold new apps from 11 built-in templates. Two-step interactive TUI (category → framework) or fully scriptable with `ferry new myapp -t express -y`
+- **11 app generators** across 5 languages, each producing a Dokku-ready project with Dockerfile, health endpoint, and request-info pages in HTML/JSON/XML/Text:
+  - **TypeScript:** Express, NestJS, Next.js (SSR), React (Vite SPA)
+  - **Python:** FastAPI, Django
+  - **Ruby:** Rails
+  - **Go:** net/http (standard library), Fiber
+  - **Rust:** Axum, Actix-web
+- **Generator infrastructure:** `generators/_shared/` with shared CSS (dark theme), response schema, .gitignore/.dockerignore templates per language, and `helpers.sh` (template copy, variable substitution, shared asset utilities)
+- **Dynamic generator discovery:** Drop a `metadata.sh` + `generate.sh` in `generators/<id>/` and it appears in `ferry new --list` automatically
+- **`ferry new` flags:** `--template/-t`, `--output/-o`, `--port/-p`, `--deploy`, `--no-deploy`, `--list/-l`, `--yes/-y`
+- **Deploy chain:** `ferry new myapp -t express --deploy -y` scaffolds and deploys in one command
+- **`FERRY_APPS_DIR` env var:** Configurable app storage directory (default: `$SCRIPT_DIR/apps`)
+- **Test suite:** 107 bats-core tests across 9 test files (unit, generator validation, CLI integration)
+  - Unit tests for: `cf_api_ok`, `cf_api_error`, `detect_app_port`, `cert_find_for_hostname`, `cert_list_zones`, `env_set`, `yaml_list_ingress`, `yaml_has_hostname`, `yaml_add_ingress`, `yaml_remove_ingress`, `yaml_validate`, `discover_generators`, `gen_index_by_id`
+  - Generator tests: all 11 generators validated for file structure, placeholder substitution, Dockerfile EXPOSE, JSON validity, entry point presence, style.css presence
+  - Integration tests: `ferry help`, `ferry new --list`, `ferry new` with all flags, name validation, custom output, existing-dir rejection
+- **Source guard on `main()`** for testability — `source ./ferry` no longer triggers execution
+- **`_ferry_init()` function** wrapping .env loading, trap setup, and cache initialization — keeps test environment clean
+
+### Fixed
+- **`cert_find_for_hostname` failed for 2-label hostnames** (e.g., `example.com`). The function stripped a label before checking, so `example.com` was never matched even when `example.com.cert` existed. Now checks the full hostname first.
+- **`env_set` broke when values contained `|`** (sed delimiter collision). Replaced sed with awk for the update path. Also safe for `&`, `\`, `=`, and spaces in values.
+- **Deploy chain always passed `-y`** regardless of user intent. `${YES:+"-y"}` expanded for `YES="false"` (non-empty string). Fixed to `$( $YES && echo "-y" )`.
+- **App name regex allowed trailing hyphens** (`test-`), which are invalid in DNS. Regex now requires alphanumeric last character.
+- **`SCRIPT_DIR` broke when invoked via symlink.** Added `readlink -f` to resolve the real script location.
+- **`cmd_deploy` ignored `FERRY_APPS_DIR`.** Auto-detection used hardcoded `$SCRIPT_DIR/apps/` instead of the configurable variable. Now consistent with `cmd_new`.
+- **Express Dockerfile didn't copy `style.css` to `dist/`** — returned 404 at runtime. Added explicit COPY in multi-stage build.
+- **NestJS had no static file serving** — `style.css` returned 404. Added `app.useStaticAssets()` to `main.ts`.
+- **React Dockerfile hardcoded port 80**, ignoring `--port` override. Now uses `{{APP_PORT}}` in both Dockerfile and nginx.conf.
+
+### Changed
+- `ferry new` added to interactive menu (between List and Deploy)
+- Help output updated with New Flags section and `ferry new` examples
+- Version bumped to 0.6.0
+
 ## [0.5.1] - 2026-03-20
 
 ### Changed

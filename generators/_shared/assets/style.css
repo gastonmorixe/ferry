@@ -1,0 +1,20 @@
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen,Ubuntu,sans-serif;background:#0f1117;color:#c9d1d9;min-height:100vh;display:flex;justify-content:center;padding:2rem 1rem}
+.container{max-width:720px;width:100%}
+h1{font-size:1.4rem;font-weight:600;color:#e6edf3;margin-bottom:.25rem}
+.subtitle{color:#7d8590;font-size:.85rem;margin-bottom:1.5rem}
+.subtitle a{color:#7d8590;text-decoration:none}
+.subtitle a:hover{text-decoration:underline}
+h2{font-size:.9rem;font-weight:600;color:#e6edf3;margin:1.5rem 0 .5rem;text-transform:uppercase;letter-spacing:.05em}
+table{width:100%;border-collapse:collapse;background:#161b22;border:1px solid #30363d;border-radius:6px;overflow:hidden;margin-bottom:.5rem}
+td{padding:.45rem .75rem;border-bottom:1px solid #21262d;font-size:.85rem;vertical-align:top;word-break:break-all}
+td:first-child{color:#7d8590;white-space:nowrap;width:140px;font-weight:500}
+td:last-child{color:#c9d1d9}
+tr:last-child td{border-bottom:none}
+.formats{margin-top:1.5rem;display:flex;gap:.5rem;flex-wrap:wrap}
+.formats a{display:inline-block;padding:.35rem .75rem;background:#161b22;border:1px solid #30363d;border-radius:4px;color:#58a6ff;text-decoration:none;font-size:.8rem}
+.formats a:hover{border-color:#58a6ff}
+.formats a.active{background:#1f6feb;border-color:#1f6feb;color:#fff}
+footer{margin-top:2rem;color:#484f58;font-size:.75rem;text-align:center}
+footer a{color:#484f58;text-decoration:none}
+footer a:hover{color:#7d8590}
