@@ -117,7 +117,7 @@ ferry deploy myapp
 ferry deploy myapp -r owner/repo -H myapp.example.com
 ```
 
-See [Initial Setup](docs/initial-setup.md) for the full first-time setup guide including tunnel creation, SSH keys, and DNS configuration. For a deeper app workflow guide, see [Deploying Apps](docs/deploying-apps.md).
+See [Initial Setup](docs/initial-setup.md) for the full first-time setup guide including tunnel creation, SSH keys, and DNS configuration. For scaffold-first usage, see [Scaffolding Apps](docs/scaffolding-apps.md). For the broader deployment lifecycle, see [Deploying Apps](docs/deploying-apps.md).
 
 ---
 
@@ -266,6 +266,7 @@ Detailed guides in [`docs/`](docs/):
 | Guide | Description |
 |---|---|
 | [Deploying Apps](docs/deploying-apps.md) | App lifecycle: deploy, update, scale, configure |
+| [Scaffolding Apps](docs/scaffolding-apps.md) | In-depth guide to `ferry new`, templates, output paths, and deploy flows |
 | [Deploy Guide: GitHub to Live](docs/deploy-guide-github-to-live.md) | End-to-end walkthrough from repo to live URL |
 | [Architecture](docs/architecture.md) | Container topology, networking, DNS, traffic flow |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and solutions |
@@ -332,6 +333,7 @@ ferry/
 ├── requirements-dev.txt
 ├── docs/
 │   ├── deploying-apps.md
+│   ├── scaffolding-apps.md
 │   ├── deploy-guide-github-to-live.md
 │   ├── architecture.md
 │   ├── troubleshooting.md
