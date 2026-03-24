@@ -2,6 +2,21 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.6.1] - 2026-03-24
+
+### Fixed
+- **Rails generator: HTTP 403 on deploy.** Generated Rails apps ran in `development` mode, where Rails 8's `HostAuthorization` middleware blocks unknown hostnames with 403. Fixed by adding `ENV RAILS_ENV=production` to the Dockerfile template, clearing `config.hosts` (Dokku/nginx handles host filtering), and generating `secret_key_base` at boot when not provided via environment.
+
+### Added
+- **Runtime HTTP smoke tests.** New Bats test verifies all 11 generators respond with HTTP 200 when started in Docker — not just that they build. Uses `docker run -d --init -P` with ephemeral ports and `curl --retry-all-errors` for reliable probing. Zero new dependencies.
+- **Rails production-readiness tests.** Three targeted assertions: `RAILS_ENV=production` in Dockerfile, `config.hosts.clear` present, `secret_key_base` configured.
+- **Docker runtime test helpers** in `generators_common.bash`: `docker_run_generated_app`, `wait_for_http_200`, `cleanup_test_containers`.
+- **Work plan spec** at `dev/plans/2026-03-24T13-22-runtime-http-smoke-tests.md` documenting the approach selection (24 alternatives evaluated), technical design, and acceptance criteria.
+
+### Changed
+- Test suite expanded from 28 to 32 tests (3 Rails checks + 1 runtime HTTP test covering all 11 generators)
+- Version bumped to 0.6.1
+
 ## [0.6.0] - 2026-03-23
 
 ### Added
@@ -17,7 +32,7 @@ All notable changes to Ferry are documented here.
 - **`ferry new` flags:** `--template/-t`, `--output/-o`, `--port/-p`, `--deploy`, `--no-deploy`, `--list/-l`, `--yes/-y`
 - **Deploy chain:** `ferry new myapp -t express --deploy -y` scaffolds and deploys in one command
 - **`FERRY_APPS_DIR` env var:** Configurable app storage directory (default: `$SCRIPT_DIR/apps`)
-- **Test suite:** 107 bats-core tests across 9 test files (unit, generator validation, CLI integration)
+- **Test suite:** 118 bats-core tests across 9 test files (unit, generator validation, CLI integration)
   - Unit tests for: `cf_api_ok`, `cf_api_error`, `detect_app_port`, `cert_find_for_hostname`, `cert_list_zones`, `env_set`, `yaml_list_ingress`, `yaml_has_hostname`, `yaml_add_ingress`, `yaml_remove_ingress`, `yaml_validate`, `discover_generators`, `gen_index_by_id`
   - Generator tests: all 11 generators validated for file structure, placeholder substitution, Dockerfile EXPOSE, JSON validity, entry point presence, style.css presence
   - Integration tests: `ferry help`, `ferry new --list`, `ferry new` with all flags, name validation, custom output, existing-dir rejection

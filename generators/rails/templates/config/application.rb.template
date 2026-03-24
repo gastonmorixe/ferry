@@ -14,6 +14,12 @@ module {{APP_NAME_CAMEL}}
     # Serve static files from public/
     config.public_file_server.enabled = true
 
+    # Allow any host (Dokku/nginx handles host filtering)
+    config.hosts.clear
+
+    # Generate secret_key_base if not provided via environment
+    config.secret_key_base = ENV["SECRET_KEY_BASE"] || SecureRandom.hex(64)
+
     config.logger = Logger.new($stdout)
     config.log_level = :info
   end

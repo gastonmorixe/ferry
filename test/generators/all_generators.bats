@@ -367,6 +367,29 @@ setup() {
     done
 }
 
+# ── Rails production readiness ──────────────────────────────────────────────
+
+@test "rails generator sets RAILS_ENV=production in Dockerfile" {
+    run_generator "rails" "test-app" "3000"
+
+    run grep 'RAILS_ENV=production' "$_GEN_OUT/Dockerfile"
+    assert_success
+}
+
+@test "rails generator clears config.hosts for Dokku proxy" {
+    run_generator "rails" "test-app" "3000"
+
+    run grep 'config.hosts.clear' "$_GEN_OUT/config/application.rb"
+    assert_success
+}
+
+@test "rails generator sets secret_key_base for production" {
+    run_generator "rails" "test-app" "3000"
+
+    run grep 'secret_key_base' "$_GEN_OUT/config/application.rb"
+    assert_success
+}
+
 # ── go-net Ferry placeholder check ──────────────────────────────────────────
 
 @test "go-net generator has no unreplaced Ferry placeholders in .go files" {
@@ -437,5 +460,70 @@ setup() {
         fi
     done
 
+    [ "$failures" -eq 0 ]
+}
+
+# ── Runtime HTTP smoke tests ────────────────────────────────────────────────
+
+@test "all generators respond with HTTP 200 when started in Docker" {
+    require_docker_for_smoke_tests
+
+    local generators=(
+        actix
+        axum
+        django
+        express
+        fastapi
+        go-fiber
+        go-net
+        nestjs
+        nextjs
+        rails
+        react
+    )
+    local -A ports=(
+        [actix]=8080
+        [axum]=3000
+        [django]=8000
+        [express]=5000
+        [fastapi]=8000
+        [go-fiber]=3000
+        [go-net]=8080
+        [nestjs]=3000
+        [nextjs]=3000
+        [rails]=3000
+        [react]=80
+    )
+
+    local failures=0
+
+    for gen in "${generators[@]}"; do
+        printf 'testing %s ...\n' "$gen" >&3
+
+        run_generator "$gen" "http-${gen}" "${ports[$gen]}"
+
+        if ! docker_run_generated_app "$gen" "${ports[$gen]}"; then
+            printf 'FAIL: docker run failed for %s\n' "$gen" >&3
+            failures=$((failures + 1))
+            continue
+        fi
+
+        local http_code
+        http_code=$(wait_for_http_200 "http://localhost:${_CONTAINER_PORT}/") || true
+
+        if [[ "$http_code" != "200" ]]; then
+            printf 'FAIL: %s returned HTTP %s (expected 200)\n' "$gen" "$http_code" >&3
+            docker logs --tail 30 "$_CONTAINER_ID" >&3 2>&1 || true
+            failures=$((failures + 1))
+        else
+            printf 'OK: %s → HTTP %s\n' "$gen" "$http_code" >&3
+        fi
+
+        # Stop container before starting the next (conserve Pi RAM)
+        docker stop "$_CONTAINER_ID" >/dev/null 2>&1 || true
+        docker rm -f "$_CONTAINER_ID" >/dev/null 2>&1 || true
+    done
+
+    cleanup_test_containers
     [ "$failures" -eq 0 ]
 }
