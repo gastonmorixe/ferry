@@ -585,12 +585,80 @@ print("ok")
 PYEOF
 }
 
+_generate_config_from_dokku() {
+    # Rebuild cloudflared config.yml from current Dokku app domains.
+    if [[ -z "$TUNNEL_ID" ]]; then
+        error "TUNNEL_ID not set — cannot rebuild config.yml"
+        return 1
+    fi
+
+    local domains_file
+    domains_file=$(mktemp)
+
+    local apps
+    if ! apps=$(dokku_list_apps 2>/dev/null); then
+        rm -f "$domains_file"
+        error "Failed to list Dokku apps while rebuilding config.yml"
+        return 1
+    fi
+    while IFS= read -r app; do
+        [[ -z "$app" ]] && continue
+        local domains
+        if ! domains=$(dokku_app_domains_all "$app"); then
+            rm -f "$domains_file"
+            error "Failed to read Dokku domains for '$app' while rebuilding config.yml"
+            return 1
+        fi
+        while IFS= read -r domain; do
+            [[ -n "$domain" ]] && printf '%s\n' "$domain" >> "$domains_file"
+        done <<< "$domains"
+    done <<< "$apps"
+
+    python3 - "$CONFIG_FILE" "$TUNNEL_ID" "$domains_file" <<'PYEOF'
+import os, sys, yaml
+
+config_path = sys.argv[1]
+tunnel_id = sys.argv[2]
+domains_path = sys.argv[3]
+
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+
+domains = []
+seen = set()
+with open(domains_path) as f:
+    for raw in f:
+        domain = raw.strip()
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        domains.append(domain)
+
+ingress = [{"hostname": domain, "service": "http://dokku:80"} for domain in domains]
+ingress.append({"service": "http_status:404"})
+
+cfg = {
+    "tunnel": tunnel_id,
+    "credentials-file": "/etc/cloudflared/credentials.json",
+    "ingress": ingress,
+}
+
+with open(config_path, "w") as f:
+    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+print(f"ok: {len(domains)} app rule(s)")
+PYEOF
+    local rc=$?
+    rm -f "$domains_file"
+    return $rc
+}
+
 ###############################################################################
 # Preflight Checks
 ###############################################################################
 
 preflight() {
     local errors=0
+    local running=""
 
     if ! command -v docker &>/dev/null; then
         error "docker not found"
@@ -607,15 +675,40 @@ preflight() {
         ((errors++)) || true
     fi
 
+    if [[ -f "$COMPOSE_FILE" ]]; then
+        running="$(docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}:{{.State}}' 2>/dev/null || true)"
+    fi
+
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        if [[ -n "$TUNNEL_ID" ]]; then
-            info "config.yml not found — generating default..."
-            if _generate_default_config; then
-                success "Generated $CONFIG_FILE"
+        if echo "$running" | grep -q "dokku:running"; then
+            local existing_apps
+            if ! existing_apps=$(dokku_list_apps 2>/dev/null); then
+                error "Failed to list Dokku apps while recovering missing config.yml"
+                ((errors++)) || true
+            elif [[ -n "$existing_apps" ]]; then
+                warn "config.yml not found — rebuilding from existing Dokku apps to avoid dropping routes..."
+                if _generate_config_from_dokku; then
+                    success "Rebuilt $CONFIG_FILE from Dokku app domains"
+                else
+                    error "Failed to rebuild config.yml from Dokku"
+                    ((errors++)) || true
+                fi
+            elif [[ -n "$TUNNEL_ID" ]]; then
+                info "config.yml not found — generating default..."
+                if _generate_default_config; then
+                    success "Generated $CONFIG_FILE"
+                else
+                    error "Failed to generate config.yml"
+                    ((errors++)) || true
+                fi
             else
-                error "Failed to generate config.yml"
+                error "cloudflared config.yml not found at $CONFIG_FILE"
                 ((errors++)) || true
             fi
+        elif [[ -n "$TUNNEL_ID" ]]; then
+            error "cloudflared config.yml not found at $CONFIG_FILE"
+            error "Dokku is not running, so Ferry refuses to generate a blank config automatically."
+            ((errors++)) || true
         else
             error "cloudflared config.yml not found at $CONFIG_FILE"
             ((errors++)) || true
@@ -628,8 +721,6 @@ preflight() {
     fi
 
     # Check containers are running
-    local running
-    running="$(docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}:{{.State}}' 2>/dev/null || true)"
     if ! echo "$running" | grep -q "cloudflared:running"; then
         error "cloudflared container is not running"
         ((errors++)) || true
@@ -649,6 +740,50 @@ preflight() {
         cf_auth_check || true
         _AUTH_CHECKED=true
     fi
+}
+
+sync_missing_ingress_from_dokku() {
+    # Ensure every Dokku app domain exists in cloudflared ingress.
+    local apps added=0
+    apps=$(dokku_list_apps 2>/dev/null) || return 1
+    while IFS= read -r app; do
+        [[ -z "$app" ]] && continue
+        local domains
+        domains=$(dokku_app_domains_all "$app") || return 1
+        while IFS= read -r domain; do
+            [[ -z "$domain" ]] && continue
+            local has
+            has=$(yaml_has_hostname "$domain")
+            if [[ "$has" != "yes" ]]; then
+                yaml_add_ingress "$domain" "http://dokku:80" >/dev/null || return 1
+                ((added++)) || true
+            fi
+        done <<< "$domains"
+    done <<< "$apps"
+    echo "$added"
+}
+
+app_effective_status() {
+    local name="$1"
+    local domain="$2"
+    local runtime_status has_ingress="no"
+    runtime_status=$(dokku_app_status "$name")
+    if [[ -n "$domain" ]] && [[ "$(yaml_has_hostname "$domain")" == "yes" ]]; then
+        has_ingress="yes"
+    fi
+
+    case "$runtime_status" in
+        running)
+            if [[ "$has_ingress" == "yes" ]]; then
+                echo "running"
+            else
+                echo "unroutable"
+            fi
+            ;;
+        *)
+            echo "$runtime_status"
+            ;;
+    esac
 }
 
 ###############################################################################
@@ -1077,10 +1212,31 @@ dokku_list_apps() {
     echo "$output" | tail -n +2
 }
 
+dokku_app_domains_all() {
+    local name="$1"
+    local output
+    output=$(dokku_cmd domains:report "$name" 2>/dev/null) || return 1
+    printf '%s\n' "$output" | awk -F':' '
+        /Domains app vhosts:|Domains global vhosts:/ {
+            value = $2
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (value == "" || value == "disabled") {
+                next
+            }
+            gsub(/,/, " ", value)
+            count = split(value, items, /[[:space:]]+/)
+            for (i = 1; i <= count; i++) {
+                if (items[i] != "") {
+                    print items[i]
+                }
+            }
+        }
+    ' | awk '!seen[$0]++'
+}
+
 dokku_app_domains() {
     local name="$1"
-    dokku_cmd domains:report "$name" 2>/dev/null | \
-        grep "Domains app vhosts:" | awk '{print $NF}'
+    dokku_app_domains_all "$name" | head -1
 }
 
 dokku_app_ports() {
@@ -1341,14 +1497,14 @@ cmd_status() {
     if [[ -z "$apps" ]]; then
         dim "(no apps)"
     else
-        printf "    ${C_DIM}%-14s %-30s %-14s %-12s %-5s${C_RESET}\n" "NAME" "DOMAIN" "PORTS" "STATUS" "DNS"
+        printf "    ${C_DIM}%-14s %-30s %-14s %-14s %-5s${C_RESET}\n" "NAME" "DOMAIN" "PORTS" "STATUS" "DNS"
         printf "    ${C_CHROME}%s${C_RESET}\n" "$(printf '─%.0s' $(seq 1 75))"
 
         while IFS= read -r app; do
             local domain ports status dns_result dns_icon status_icon
             domain=$(dokku_app_domains "$app")
             ports=$(dokku_app_ports "$app")
-            status=$(dokku_app_status "$app")
+            status=$(app_effective_status "$app" "$domain")
             dns_result=$(dns_check "$domain" 2>/dev/null || true)
             if [[ -n "$dns_result" ]]; then
                 dns_icon="${C_SUCCESS}✓${C_RESET}"
@@ -1358,6 +1514,7 @@ cmd_status() {
 
             case "$status" in
                 running)        status_icon="${C_SUCCESS}●${C_RESET}" ;;
+                unroutable)     status_icon="${C_WARN}○${C_RESET}" ;;
                 "not deployed") status_icon="${C_WARN}○${C_RESET}" ;;
                 *)              status_icon="${C_ERROR}○${C_RESET}" ;;
             esac
@@ -1441,15 +1598,16 @@ cmd_list() {
 
     section_header "Apps"
     echo ""
-    printf "    ${C_DIM}%-14s %-30s %-14s %-12s${C_RESET}\n" "NAME" "DOMAIN" "PORTS" "STATUS"
+    printf "    ${C_DIM}%-14s %-30s %-14s %-14s${C_RESET}\n" "NAME" "DOMAIN" "PORTS" "STATUS"
     printf "    ${C_CHROME}%s${C_RESET}\n" "$(printf '─%.0s' $(seq 1 70))"
     while IFS= read -r app; do
         local domain ports status status_icon
         domain=$(dokku_app_domains "$app")
         ports=$(dokku_app_ports "$app")
-        status=$(dokku_app_status "$app")
+        status=$(app_effective_status "$app" "$domain")
         case "$status" in
             running)        status_icon="${C_SUCCESS}●${C_RESET}" ;;
+            unroutable)     status_icon="${C_WARN}○${C_RESET}" ;;
             "not deployed") status_icon="${C_WARN}○${C_RESET}" ;;
             *)              status_icon="${C_ERROR}○${C_RESET}" ;;
         esac
@@ -1507,6 +1665,15 @@ cmd_deploy() {
     if dokku_app_exists "$name"; then
         error "App '$name' already exists in Dokku."
         return 1
+    fi
+
+    local restored_ingress=0
+    restored_ingress=$(sync_missing_ingress_from_dokku 2>/dev/null) || {
+        error "Failed to verify existing ingress before deploy."
+        return 1
+    }
+    if [[ "$restored_ingress" =~ ^[0-9]+$ ]] && ((restored_ingress > 0)); then
+        warn "Restored $restored_ingress missing ingress rule(s) from Dokku before deploy"
     fi
 
     # --- Resolve app source ---

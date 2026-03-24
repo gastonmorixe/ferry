@@ -34,11 +34,14 @@ All notable changes to Ferry are documented here.
 - **Express Dockerfile didn't copy `style.css` to `dist/`** — returned 404 at runtime. Added explicit COPY in multi-stage build.
 - **NestJS had no static file serving** — `style.css` returned 404. Added `app.useStaticAssets()` to `main.ts`.
 - **React Dockerfile hardcoded port 80**, ignoring `--port` override. Now uses `{{APP_PORT}}` in both Dockerfile and nginx.conf.
+- **Fresh scaffold deploys failed for multiple generators.** Node templates no longer assume a pre-generated `package-lock.json`; Rust templates now copy compile-time assets into the build stage and match Rust 2024 rules; Go Fiber now resolves/builds modules from a fresh scaffold; Rails installs the system package needed for `psych`; React now emits the TypeScript project files referenced by its root config.
+- **Missing tunnel config could silently diverge from Dokku state.** Ferry now rebuilds `config.yml` from existing Dokku app domains when possible, restores missing ingress before deploy, and reports running apps without ingress as `unroutable` instead of fully healthy.
 
 ### Changed
 - `ferry new` added to interactive menu (between List and Deploy)
 - Help output updated with New Flags section and `ferry new` examples
 - Version bumped to 0.6.0
+- Generator coverage now includes real `docker build` smoke tests for every scaffolded app, plus dedicated recovery tests for Dokku-driven ingress rebuild behavior
 
 ## [0.5.1] - 2026-03-20
 

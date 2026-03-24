@@ -24,6 +24,8 @@ template_copy "$TMPL/index.html.template"        "$OUTPUT_DIR"
 template_copy "$TMPL/package.json.template"      "$OUTPUT_DIR"
 template_copy "$TMPL/vite.config.ts.template"    "$OUTPUT_DIR"
 template_copy "$TMPL/tsconfig.json.template"     "$OUTPUT_DIR"
+template_copy "$TMPL/tsconfig.app.json.template" "$OUTPUT_DIR"
+template_copy "$TMPL/tsconfig.node.json.template" "$OUTPUT_DIR"
 template_copy "$TMPL/Dockerfile.template"        "$OUTPUT_DIR"
 template_copy "$TMPL/nginx.conf.template"        "$OUTPUT_DIR"
 

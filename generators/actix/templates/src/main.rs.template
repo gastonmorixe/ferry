@@ -106,7 +106,7 @@ fn headers_to_json(req: &HttpRequest) -> serde_json::Value {
         let v = value.to_str().unwrap_or("").to_string();
         map.entry(name.as_str().to_string())
             .and_modify(|existing| {
-                if let serde_json::Value::String(ref mut s) = existing {
+                if let serde_json::Value::String(s) = existing {
                     s.push_str(", ");
                     s.push_str(&v);
                 }

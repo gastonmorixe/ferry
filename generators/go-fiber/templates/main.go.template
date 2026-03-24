@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/xml"
 	"fmt"
+	"html"
 	"log"
 	"os"
 	"sort"
@@ -126,12 +127,12 @@ func renderHTML(c *fiber.Ctx, p string) error {
 	ts := timestamp()
 
 	var rows strings.Builder
-	for _, h := range headers {
-		rows.WriteString(fmt.Sprintf("    <tr><td>%s</td><td>%s</td></tr>\n",
-			fiber.EscapeHTML(h.Key), fiber.EscapeHTML(h.Value)))
-	}
+		for _, h := range headers {
+			rows.WriteString(fmt.Sprintf("    <tr><td>%s</td><td>%s</td></tr>\n",
+				html.EscapeString(h.Key), html.EscapeString(h.Value)))
+		}
 
-	html := fmt.Sprintf(`<!DOCTYPE html>
+		html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -176,11 +177,11 @@ func renderHTML(c *fiber.Ctx, p string) error {
 </body>
 </html>`,
 		appName, appName,
-		fiber.EscapeHTML(c.Method()),
-		fiber.EscapeHTML(c.OriginalURL()),
-		fiber.EscapeHTML(c.IP()),
-		fiber.EscapeHTML(c.Protocol()),
-		fiber.EscapeHTML(c.Hostname()),
+		html.EscapeString(c.Method()),
+		html.EscapeString(c.OriginalURL()),
+		html.EscapeString(c.IP()),
+		html.EscapeString(c.Protocol()),
+		html.EscapeString(c.Hostname()),
 		ts,
 		hn, p,
 		rows.String(),

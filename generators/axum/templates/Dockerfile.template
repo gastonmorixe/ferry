@@ -10,6 +10,7 @@ RUN mkdir src && echo 'fn main(){}' > src/main.rs \
     && rm -rf src
 
 # 2. Copy real source and rebuild (only the crate itself recompiles).
+COPY style.css ./style.css
 COPY src ./src
 RUN touch src/main.rs \
     && cargo build --release

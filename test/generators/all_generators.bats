@@ -122,6 +122,8 @@ setup() {
     assert_file_exists "$_GEN_OUT/.dockerignore"
     assert_file_exists "$_GEN_OUT/package.json"
     assert_file_exists "$_GEN_OUT/tsconfig.json"
+    assert_file_exists "$_GEN_OUT/tsconfig.app.json"
+    assert_file_exists "$_GEN_OUT/tsconfig.node.json"
 
     run grep -r '{{' "$_GEN_OUT"
     assert_failure
@@ -139,6 +141,34 @@ setup() {
 
     run bash -c "jq . '$_GEN_OUT/tsconfig.json' > /dev/null"
     assert_success
+
+    run bash -c "jq . '$_GEN_OUT/tsconfig.app.json' > /dev/null"
+    assert_success
+
+    run bash -c "jq . '$_GEN_OUT/tsconfig.node.json' > /dev/null"
+    assert_success
+}
+
+@test "node generators use a first-build-safe npm install strategy" {
+    local generators=(express nextjs nestjs react)
+    local -A ports=(
+        [express]=5000
+        [nextjs]=3000
+        [nestjs]=3000
+        [react]=80
+    )
+
+    for gen in "${generators[@]}"; do
+        run_generator "$gen" "test-${gen}" "${ports[$gen]}"
+
+        assert_file_not_exists "$_GEN_OUT/package-lock.json"
+
+        run grep -n "npm ci" "$_GEN_OUT/Dockerfile"
+        assert_failure
+
+        run grep -n "npm install" "$_GEN_OUT/Dockerfile"
+        assert_success
+    done
 }
 
 # ── django ────────────────────────────────────────────────────────────────────
@@ -174,6 +204,12 @@ setup() {
     run grep 'EXPOSE' "$_GEN_OUT/Dockerfile"
     assert_success
     assert_output --partial "3000"
+}
+
+@test "rails generator creates Gemfile.lock required by Dockerfile" {
+    run_generator "rails" "test-app" "3000"
+
+    assert_file_exists "$_GEN_OUT/Gemfile.lock"
 }
 
 # ── go-net ────────────────────────────────────────────────────────────────────
@@ -360,4 +396,46 @@ setup() {
     run_generator "go-net" "my-cool-app" "8080"
     run grep "my-cool-app" "$_GEN_OUT/go.mod"
     assert_success
+}
+
+@test "all generators build their generated Docker image" {
+    require_docker_for_smoke_tests
+
+    local generators=(
+        actix
+        axum
+        django
+        express
+        fastapi
+        go-fiber
+        go-net
+        nestjs
+        nextjs
+        rails
+        react
+    )
+    local -A ports=(
+        [actix]=8080
+        [axum]=3000
+        [django]=8000
+        [express]=5000
+        [fastapi]=8000
+        [go-fiber]=3000
+        [go-net]=8080
+        [nestjs]=3000
+        [nextjs]=3000
+        [rails]=3000
+        [react]=80
+    )
+
+    local failures=0
+
+    for gen in "${generators[@]}"; do
+        run_generator "$gen" "smoke-${gen}" "${ports[$gen]}"
+        if ! docker_build_generated_app "$gen"; then
+            failures=$((failures + 1))
+        fi
+    done
+
+    [ "$failures" -eq 0 ]
 }

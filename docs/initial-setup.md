@@ -87,14 +87,20 @@ mkdir -p ~/ferry/{tunnels/providers/cloudflare,apps/test-app,docs}
 The following files were created:
 
 - `docker-compose.yml`: cloudflared + dokku services
-- `tunnels/providers/cloudflare/config.yml`: tunnel ingress rules (gitignored, auto-generated from TUNNEL_ID if missing)
+- `tunnels/providers/cloudflare/config.yml`: tunnel ingress rules (gitignored, recovered from Dokku app domains when possible, otherwise generated from TUNNEL_ID)
 - `~/.cloudflared/<tunnel-id>.json`: tunnel credentials (mounted into container via docker-compose, never copied into project)
 - `.env`: TUNNEL_ID, DOKKU_HOSTNAME, CF_API_TOKEN, CF_ACCOUNT_ID
 - `.env.example`: template for .env
 - `.gitignore`: keeps secrets out of git
 - `apps/test-app/`: Node/Express test application
 
-Ferry no longer keeps a checked-in `config.yml.example`; it generates a minimal `config.yml` automatically when the tunnel config is missing.
+Ferry no longer keeps a checked-in `config.yml.example`.
+
+If `config.yml` is missing:
+
+- with a running Dokku instance and existing apps, Ferry rebuilds ingress from the current Dokku app domains so routes are not dropped
+- with no existing apps but a configured `TUNNEL_ID`, Ferry generates a minimal config with only the catch-all rule
+- with Dokku unavailable, Ferry refuses to generate a blank config automatically and asks you to restore the stack first
 
 See the main README for the full file structure.
 

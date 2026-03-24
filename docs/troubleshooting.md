@@ -214,6 +214,30 @@ chmod 644 ~/.cloudflared/<tunnel-id>.json
 docker compose restart cloudflared
 ```
 
+### Missing `config.yml`
+
+**Symptom:** `ferry status`, `ferry deploy`, or `ferry reload` reports that `tunnels/providers/cloudflare/config.yml` is missing.
+
+**Current behavior:**
+
+- if Dokku is running and already has apps, Ferry rebuilds `config.yml` from the current Dokku domains instead of generating a blank ingress file
+- if there are no Dokku apps yet but `TUNNEL_ID` is configured, Ferry generates the minimal catch-all config
+- if Dokku is not running, Ferry fails preflight rather than generating a blank config that would drop routes later
+
+**Fix:** start the stack first, then rerun the command:
+
+```bash
+docker compose up -d
+ferry status
+```
+
+If Ferry rebuilt the file but an app still shows as `unroutable`, the Dokku app is running but its hostname is still missing from cloudflared ingress. Run a deploy or inspect the current routes:
+
+```bash
+ferry deploy <app> --no-push -y
+ferry status
+```
+
 ## ferry CLI Issues
 
 ### Output has ANSI escape codes

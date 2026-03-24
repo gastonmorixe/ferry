@@ -6,7 +6,8 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY package*.json ./
-RUN npm ci
+# Generated apps do not ship a lockfile on first scaffold.
+RUN npm install
 
 COPY . .
 RUN npm run build

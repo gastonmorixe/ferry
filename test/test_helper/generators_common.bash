@@ -31,3 +31,27 @@ run_generator() {
         SHARED_DIR="$SHARED_DIR" FERRY_VERSION="$FERRY_VERSION" \
         bash "$GENERATORS_DIR/$id/generate.sh"
 }
+
+require_docker_for_smoke_tests() {
+    if ! command -v docker >/dev/null 2>&1; then
+        skip "docker is required for generator smoke tests"
+    fi
+
+    if ! docker info >/dev/null 2>&1; then
+        skip "docker daemon is not available for generator smoke tests"
+    fi
+}
+
+docker_build_generated_app() {
+    local generator_id="$1"
+    local image_tag="ferry-test-${generator_id}-${RANDOM}"
+    local log_file="$BATS_TEST_TMPDIR/${generator_id}-docker-build.log"
+
+    if ! docker build -t "$image_tag" "$_GEN_OUT" >"$log_file" 2>&1; then
+        printf 'docker build failed for %s\n' "$generator_id" >&3
+        tail -n 80 "$log_file" >&3
+        return 1
+    fi
+
+    docker image rm -f "$image_tag" >/dev/null 2>&1 || true
+}
