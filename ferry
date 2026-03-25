@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.6.4"
+FERRY_VERSION="0.6.5"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -679,6 +679,18 @@ preflight() {
         running="$(docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}:{{.State}}' 2>/dev/null || true)"
     fi
 
+    # Docker creates config.yml as a directory when the host file is missing
+    if [[ -d "$CONFIG_FILE" ]]; then
+        warn "config.yml is a directory (likely created by Docker) — removing so it can be regenerated as a file"
+        rm -rf "$CONFIG_FILE"
+    fi
+
+    # Treat empty config.yml the same as missing — yaml.safe_load returns None
+    if [[ -f "$CONFIG_FILE" ]] && [[ ! -s "$CONFIG_FILE" ]]; then
+        warn "config.yml is empty — removing so it can be regenerated"
+        rm -f "$CONFIG_FILE"
+    fi
+
     if [[ ! -f "$CONFIG_FILE" ]]; then
         if echo "$running" | grep -q "dokku:running"; then
             local existing_apps
@@ -795,7 +807,7 @@ yaml_list_ingress() {
 import sys, yaml
 
 with open(sys.argv[1]) as f:
-    cfg = yaml.safe_load(f)
+    cfg = yaml.safe_load(f) or {}
 
 for rule in cfg.get("ingress", []):
     hostname = rule.get("hostname", "(catch-all)")
@@ -810,7 +822,7 @@ yaml_has_hostname() {
 import sys, yaml
 
 with open(sys.argv[1]) as f:
-    cfg = yaml.safe_load(f)
+    cfg = yaml.safe_load(f) or {}
 
 hostname = sys.argv[2]
 for rule in cfg.get("ingress", []):
@@ -836,6 +848,10 @@ shutil.copy2(config_path, config_path + ".bak")
 
 with open(config_path) as f:
     cfg = yaml.safe_load(f)
+
+if not cfg:
+    print("ERROR: config.yml is empty or invalid", file=sys.stderr)
+    sys.exit(1)
 
 ingress = cfg.get("ingress", [])
 
@@ -885,6 +901,10 @@ shutil.copy2(config_path, config_path + ".bak")
 with open(config_path) as f:
     cfg = yaml.safe_load(f)
 
+if not cfg:
+    print("ERROR: config.yml is empty or invalid", file=sys.stderr)
+    sys.exit(1)
+
 ingress = cfg.get("ingress", [])
 new_ingress = [r for r in ingress if r.get("hostname") != hostname]
 
@@ -919,6 +939,10 @@ try:
         cfg = yaml.safe_load(f)
 except Exception as e:
     print(f"ERROR: invalid YAML: {e}", file=sys.stderr)
+    sys.exit(1)
+
+if not cfg:
+    print("ERROR: config.yml is empty or invalid", file=sys.stderr)
     sys.exit(1)
 
 ingress = cfg.get("ingress")
