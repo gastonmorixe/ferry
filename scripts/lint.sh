@@ -42,4 +42,7 @@ files=(
     test/test_helper/generators_common.bash
 )
 
-shellcheck -x -e SC1091,SC2034 "${files[@]}"
+# SC1091: sourced file not found (expected — test helpers source ferry)
+# SC2034: variable appears unused (exported for subprocesses)
+# SC2015: A && B || C pattern (deliberate set -e guard in TUI selector)
+shellcheck -x -e SC1091,SC2034,SC2015 "${files[@]}"
