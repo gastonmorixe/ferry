@@ -2,6 +2,19 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.6.2] - 2026-03-25
+
+### Changed
+- **CI parallelized into 14 concurrent jobs.** Lint, unit tests, and generator structure tests each run in their own job. Docker smoke tests (build + HTTP 200) use a GHA matrix to run all 11 generators in parallel. Lint/unit failures now surface in ~30s instead of waiting 9+ min for Docker builds to complete.
+- **Rust generators bumped to 1.87.** `unicode-segmentation` 1.13+ requires `is_multiple_of()` stabilized in Rust 1.87.
+- **GHA actions updated to Node.js 24-compatible versions** (checkout v5, setup-python v6).
+- **ShellCheck SC2015 excluded** in lint config (deliberate `set -e` guard pattern in TUI selector).
+- Version bumped to 0.6.2
+
+### Added
+- `scripts/smoke-test-generator.sh` — standalone script to build and HTTP-test a single generator, used by CI matrix jobs.
+- Bats `docker` test tags on Docker-heavy tests for filtered runs.
+
 ## [0.6.1] - 2026-03-24
 
 ### Fixed

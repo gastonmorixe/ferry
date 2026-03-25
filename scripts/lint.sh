@@ -15,6 +15,7 @@ files=(
     scripts/bootstrap-dev.sh
     scripts/lint.sh
     scripts/test.sh
+    scripts/smoke-test-generator.sh
     generators/_shared/helpers.sh
     generators/actix/generate.sh
     generators/actix/metadata.sh

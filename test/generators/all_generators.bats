@@ -421,6 +421,7 @@ setup() {
     assert_success
 }
 
+# bats test_tags=docker
 @test "all generators build their generated Docker image" {
     require_docker_for_smoke_tests
 
@@ -465,6 +466,7 @@ setup() {
 
 # ── Runtime HTTP smoke tests ────────────────────────────────────────────────
 
+# bats test_tags=docker
 @test "all generators respond with HTTP 200 when started in Docker" {
     require_docker_for_smoke_tests
 

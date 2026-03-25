@@ -9,19 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-
+        with: { submodules: recursive }
       - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
-          python3 -m pip install -r requirements-dev.txt
-
+        with: { python-version: "3.11" }
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: python3 -m pip install -r requirements-dev.txt
       - run: make bootstrap
       - run: make lint
 
@@ -29,42 +21,63 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-
+        with: { submodules: recursive }
       - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bats jq
-          python3 -m pip install -r requirements-dev.txt
-
+        with: { python-version: "3.11" }
+      - run: sudo apt-get update && sudo apt-get install -y bats jq
+      - run: python3 -m pip install -r requirements-dev.txt
       - run: make bootstrap
-      - name: Run unit and integration tests
-        run: |
-          bats test/unit
-          bats test/integration
+      - name: Unit and integration tests
+        run: bats test/unit && bats test/integration
 
-  generator-tests:
+  generator-structure:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-
+        with: { submodules: recursive }
       - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bats jq
-          python3 -m pip install -r requirements-dev.txt
-
+        with: { python-version: "3.11" }
+      - run: sudo apt-get update && sudo apt-get install -y bats jq
+      - run: python3 -m pip install -r requirements-dev.txt
       - run: make bootstrap
-      - name: Run generator tests (structure + Docker build + HTTP smoke)
-        run: bats test/generators
+      - name: Generator structure tests (no Docker)
+        run: bats test/generators --filter-tags '!docker'
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - gen: actix
+            port: 8080
+          - gen: axum
+            port: 3000
+          - gen: django
+            port: 8000
+          - gen: express
+            port: 5000
+          - gen: fastapi
+            port: 8000
+          - gen: go-fiber
+            port: 3000
+          - gen: go-net
+            port: 8080
+          - gen: nestjs
+            port: 3000
+          - gen: nextjs
+            port: 3000
+          - gen: rails
+            port: 3000
+          - gen: react
+            port: 80
+    name: smoke (${{ matrix.gen }})
+    steps:
+      - uses: actions/checkout@v5
+        with: { submodules: recursive }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.11" }
+      - run: python3 -m pip install -r requirements-dev.txt
+      - run: make bootstrap
+      - name: Build + HTTP 200 (${{ matrix.gen }})
+        run: ./scripts/smoke-test-generator.sh ${{ matrix.gen }} ${{ matrix.port }}
