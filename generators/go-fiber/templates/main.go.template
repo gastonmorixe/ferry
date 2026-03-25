@@ -28,7 +28,7 @@ type Header struct {
 
 type JSONResponse struct {
 	App       string          `json:"app"`
-	Ferry     bool            `json:"ferry"`
+	Ferry     string          `json:"ferry"`
 	Timestamp string          `json:"timestamp"`
 	Server    ServerInfo      `json:"server"`
 	Request   RequestInfoJSON `json:"request"`
@@ -51,7 +51,7 @@ type RequestInfoJSON struct {
 type XMLResponse struct {
 	XMLName   xml.Name       `xml:"response"`
 	App       string         `xml:"app"`
-	Ferry     bool           `xml:"ferry"`
+	Ferry     string         `xml:"ferry"`
 	Timestamp string         `xml:"timestamp"`
 	Server    XMLServerInfo  `xml:"server"`
 	Request   XMLRequestInfo `xml:"request"`
@@ -143,7 +143,7 @@ func renderHTML(c *fiber.Ctx, p string) error {
 <body>
 <div class="container">
   <h1>%s</h1>
-  <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></p>
+  <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></p>
 
   <h2>Request</h2>
   <table>
@@ -172,7 +172,7 @@ func renderHTML(c *fiber.Ctx, p string) error {
     <a href="/text">[Text]</a>
   </div>
 
-  <footer>Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></footer>
+  <footer>Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></footer>
 </div>
 </body>
 </html>`,
@@ -204,7 +204,7 @@ func handleJSON(p string) fiber.Handler {
 		_, flat := collectHeaders(c)
 		resp := JSONResponse{
 			App:       appName,
-			Ferry:     true,
+			Ferry:     "⛵ Ferry v{{FERRY_VERSION}}",
 			Timestamp: timestamp(),
 			Server: ServerInfo{
 				Hostname: hostname(),
@@ -232,7 +232,7 @@ func handleXML(p string) fiber.Handler {
 		}
 		resp := XMLResponse{
 			App:       appName,
-			Ferry:     true,
+			Ferry:     "⛵ Ferry v{{FERRY_VERSION}}",
 			Timestamp: timestamp(),
 			Server: XMLServerInfo{
 				Hostname: hostname(),
@@ -278,7 +278,7 @@ func handleText(p string) fiber.Handler {
 		for _, h := range headers {
 			sb.WriteString(fmt.Sprintf("- %s: %s\n", h.Key, h.Value))
 		}
-		sb.WriteString("\n---\nDeployed with Ferry\n")
+		sb.WriteString("\n---\nBuilt with ⛵ Ferry v{{FERRY_VERSION}}\nhttps://github.com/gastonmorixe/ferry\n")
 
 		c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
 		return c.SendString(sb.String())

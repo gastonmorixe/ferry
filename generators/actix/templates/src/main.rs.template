@@ -32,7 +32,7 @@ struct RequestInfo {
 #[derive(Serialize)]
 struct JsonBody {
     app: String,
-    ferry: bool,
+    ferry: String,
     timestamp: String,
     server: ServerInfo,
     request: RequestInfo,
@@ -155,7 +155,7 @@ async fn handle_root(req: HttpRequest, data: web::Data<AppState>) -> impl Respon
 <body>
   <div class="container">
     <h1>{app}</h1>
-    <p class="subtitle">Rust &middot; Actix-web &middot; deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></p>
+    <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></p>
 
     <h2>Request</h2>
     <table>
@@ -182,7 +182,7 @@ async fn handle_root(req: HttpRequest, data: web::Data<AppState>) -> impl Respon
       <a href="/text">[Text]</a>
     </div>
 
-    <footer>Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></footer>
+    <footer>Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></footer>
   </div>
 </body>
 </html>"#,
@@ -203,7 +203,7 @@ async fn handle_root(req: HttpRequest, data: web::Data<AppState>) -> impl Respon
 async fn handle_json(req: HttpRequest, data: web::Data<AppState>) -> impl Responder {
     let body = JsonBody {
         app: data.app_name.clone(),
-        ferry: true,
+        ferry: "⛵ Ferry v{{FERRY_VERSION}}".to_string(),
         timestamp: now_rfc3339(),
         server: ServerInfo {
             hostname: hostname(),
@@ -243,7 +243,7 @@ async fn handle_xml(req: HttpRequest, data: web::Data<AppState>) -> impl Respond
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <response>\n\
   <app>{app}</app>\n\
-  <ferry>true</ferry>\n\
+  <ferry>⛵ Ferry v{{FERRY_VERSION}}</ferry>\n\
   <timestamp>{ts}</timestamp>\n\
   <server>\n\
     <hostname>{host}</hostname>\n\
@@ -278,7 +278,7 @@ async fn handle_text(req: HttpRequest, data: web::Data<AppState>) -> impl Respon
     let ip = peer_addr(&req);
 
     let text = format!(
-        "# {app}\n\nRust \u{00b7} Actix-web \u{00b7} deployed with Ferry\n\n\
+        "# {app}\n\nBuilt with ⛵ Ferry v{{FERRY_VERSION}}\n\n\
 ## Server\n\n\
 - Hostname: {host}\n\
 - Port:     {port}\n\
@@ -288,7 +288,7 @@ async fn handle_text(req: HttpRequest, data: web::Data<AppState>) -> impl Respon
 - URL:      /text\n\
 - IP:       {ip}\n\n\
 ---\n\
-Deployed with Ferry <https://github.com/gastonmorixe/ferry>\n",
+Built with ⛵ Ferry v{{FERRY_VERSION}} <https://github.com/gastonmorixe/ferry>\n",
         app = data.app_name,
         host = host,
         port = data.port,

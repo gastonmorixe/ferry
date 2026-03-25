@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
   title: '{{APP_NAME}}',
-  description: 'Deployed with Ferry v{{FERRY_VERSION}}',
+  description: 'Built with ⛵ Ferry v{{FERRY_VERSION}}',
 }
 
 export default function RootLayout({

@@ -4,7 +4,7 @@ import { hostname } from 'os'
 
 export interface RequestInfo {
   app: string
-  ferry: boolean
+  ferry: string
   timestamp: string
   server: {
     hostname: string
@@ -35,7 +35,7 @@ export class AppService {
 
     return {
       app: '{{APP_NAME}}',
-      ferry: true,
+      ferry: '⛵ Ferry v{{FERRY_VERSION}}',
       timestamp: new Date().toISOString(),
       server: {
         hostname: hostname(),
@@ -68,7 +68,7 @@ export class AppService {
 <body>
   <div class="container">
     <h1>${esc(info.app)}</h1>
-    <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry v{{FERRY_VERSION}}</a></p>
+    <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry v{{FERRY_VERSION}}</a></p>
 
     <h2>Request</h2>
     <table><tbody>
@@ -97,7 +97,7 @@ export class AppService {
       <a href="/text">Text</a>
     </div>
 
-    <footer><a href="https://github.com/gastonmorixe/ferry">Deployed with Ferry</a></footer>
+    <footer><a href="https://github.com/gastonmorixe/ferry">Built with ⛵ Ferry</a></footer>
   </div>
 </body>
 </html>`
@@ -112,7 +112,7 @@ export class AppService {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <response>
   <app>${esc(info.app)}</app>
-  <ferry>true</ferry>
+  <ferry>⛵ Ferry v{{FERRY_VERSION}}</ferry>
   <timestamp>${esc(info.timestamp)}</timestamp>
   <server>
     <hostname>${esc(info.server.hostname)}</hostname>
@@ -138,7 +138,7 @@ ${headerEntries}
 
     return `# ${info.app}
 
-Deployed with Ferry v{{FERRY_VERSION}}
+Built with ⛵ Ferry v{{FERRY_VERSION}}
 
 ## Request
 

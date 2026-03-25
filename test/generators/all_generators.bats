@@ -390,6 +390,64 @@ setup() {
     assert_success
 }
 
+# ── Ferry attribution branding ──────────────────────────────────────────────
+
+@test "all generators include Ferry attribution in generated output" {
+    local -A ports=(
+        [express]=5000 [fastapi]=8000 [nextjs]=3000 [nestjs]=3000
+        [react]=80 [django]=8000 [rails]=3000 [go-net]=8080
+        [go-fiber]=3000 [axum]=3000 [actix]=8080
+    )
+
+    local failures=0
+
+    for gen in "${!ports[@]}"; do
+        run_generator "$gen" "branding-${gen}" "${ports[$gen]}"
+
+        # Check for "Built with" in generated source files
+        if ! grep -rq 'Built with' "$_GEN_OUT" --include='*.ts' --include='*.tsx' --include='*.py' --include='*.rb' --include='*.erb' --include='*.go' --include='*.rs'; then
+            printf 'FAIL: %s missing "Built with" in source\n' "$gen" >&3
+            failures=$((failures + 1))
+        fi
+
+        # Check for Ferry emoji branding (⛵) in generated source files
+        if ! grep -rq '⛵' "$_GEN_OUT" --include='*.ts' --include='*.tsx' --include='*.py' --include='*.rb' --include='*.erb' --include='*.go' --include='*.rs'; then
+            printf 'FAIL: %s missing ⛵ emoji in source\n' "$gen" >&3
+            failures=$((failures + 1))
+        fi
+
+        # Check for GitHub repo link
+        if ! grep -rq 'github.com/gastonmorixe/ferry' "$_GEN_OUT" --include='*.ts' --include='*.tsx' --include='*.py' --include='*.rb' --include='*.erb' --include='*.go' --include='*.rs'; then
+            printf 'FAIL: %s missing GitHub repo link\n' "$gen" >&3
+            failures=$((failures + 1))
+        fi
+    done
+
+    [ "$failures" -eq 0 ]
+}
+
+@test "all server generators include Ferry version in JSON response field" {
+    local -A ports=(
+        [express]=5000 [fastapi]=8000 [nextjs]=3000 [nestjs]=3000
+        [django]=8000 [rails]=3000 [go-net]=8080
+        [go-fiber]=3000 [axum]=3000 [actix]=8080
+    )
+
+    local failures=0
+
+    for gen in "${!ports[@]}"; do
+        run_generator "$gen" "json-${gen}" "${ports[$gen]}"
+
+        # The ferry field should contain version string, not boolean true
+        if grep -rq '"ferry".*:.*true\b' "$_GEN_OUT" --include='*.ts' --include='*.py' --include='*.rb' --include='*.go' --include='*.rs'; then
+            printf 'FAIL: %s still has ferry: true (should be version string)\n' "$gen" >&3
+            failures=$((failures + 1))
+        fi
+    done
+
+    [ "$failures" -eq 0 ]
+}
+
 # ── go-net Ferry placeholder check ──────────────────────────────────────────
 
 @test "go-net generator has no unreplaced Ferry placeholders in .go files" {

@@ -7,9 +7,9 @@ function App() {
     <div className="container">
       <h1>{{APP_NAME}}</h1>
       <p className="subtitle">
-        Deployed with{' '}
+        Built with{' '}
         <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noreferrer">
-          Ferry v{{FERRY_VERSION}}
+          ⛵ Ferry v{{FERRY_VERSION}}
         </a>
       </p>
 
@@ -56,7 +56,7 @@ function App() {
 
       <footer>
         <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noreferrer">
-          Deployed with Ferry
+          Built with ⛵ Ferry
         </a>
       </footer>
     </div>

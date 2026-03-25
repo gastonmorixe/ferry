@@ -27,7 +27,7 @@ class InfoController < ApplicationController
       <?xml version="1.0" encoding="UTF-8"?>
       <response>
         <app>#{CGI.escapeHTML(d[:app])}</app>
-        <ferry>true</ferry>
+        <ferry>⛵ Ferry v#{FERRY_VERSION}</ferry>
         <timestamp>#{d[:timestamp]}</timestamp>
         <server>
           <hostname>#{CGI.escapeHTML(srv[:hostname])}</hostname>
@@ -73,7 +73,7 @@ class InfoController < ApplicationController
       - Timestamp: #{d[:timestamp]}
 
       ---
-      Deployed with Ferry v#{FERRY_VERSION}
+      Built with ⛵ Ferry v#{FERRY_VERSION}
       https://github.com/gastonmorixe/ferry
     TEXT
 
@@ -99,7 +99,7 @@ class InfoController < ApplicationController
 
     {
       app:       APP_NAME,
-      ferry:     true,
+      ferry:     "⛵ Ferry v#{FERRY_VERSION}",
       timestamp: Time.now.utc.iso8601,
       server: {
         hostname: Socket.gethostname,

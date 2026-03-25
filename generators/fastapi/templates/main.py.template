@@ -14,7 +14,7 @@ def _build_context(request: Request) -> dict:
     hostname = socket.gethostname()
     return {
         "app": "{{APP_NAME}}",
-        "ferry": True,
+        "ferry": "⛵ Ferry v{{FERRY_VERSION}}",
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "server": {
             "hostname": hostname,
@@ -52,7 +52,7 @@ async def index(request: Request):
 <body>
   <div class="container">
     <h1>{ctx["app"]}</h1>
-    <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></p>
+    <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></p>
 
     <h2>Request</h2>
     <table>
@@ -81,7 +81,7 @@ async def index(request: Request):
       <a href="/text">[Text]</a>
     </div>
 
-    <footer>Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a></footer>
+    <footer>Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></footer>
   </div>
 </body>
 </html>"""
@@ -108,7 +108,7 @@ async def xml_view(request: Request):
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <response>
   <app>{_xml_escape(ctx["app"])}</app>
-  <ferry>true</ferry>
+  <ferry>⛵ Ferry v{{FERRY_VERSION}}</ferry>
   <timestamp>{_xml_escape(ctx["timestamp"])}</timestamp>
   <server>
     <hostname>{_xml_escape(srv["hostname"])}</hostname>
@@ -153,7 +153,7 @@ async def text_view(request: Request):
 {header_lines}
 
 ---
-Deployed with Ferry <https://github.com/gastonmorixe/ferry>
+Built with ⛵ Ferry v{{FERRY_VERSION}} <https://github.com/gastonmorixe/ferry>
 Formats: / | /json | /xml | /text
 """
     return PlainTextResponse(content=text)

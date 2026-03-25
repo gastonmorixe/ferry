@@ -31,8 +31,8 @@ export default async function Page() {
     <div className="container">
       <h1>{{APP_NAME}}</h1>
       <p className="subtitle">
-        Deployed with{' '}
-        <a href="https://github.com/gastonmorixe/ferry">Ferry v{{FERRY_VERSION}}</a>
+        Built with{' '}
+        <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry v{{FERRY_VERSION}}</a>
       </p>
 
       <h2>Request</h2>
@@ -72,7 +72,7 @@ export default async function Page() {
       </div>
 
       <footer>
-        <a href="https://github.com/gastonmorixe/ferry">Deployed with Ferry</a>
+        <a href="https://github.com/gastonmorixe/ferry">Built with ⛵ Ferry</a>
       </footer>
     </div>
   )

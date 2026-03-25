@@ -24,7 +24,7 @@ export async function GET() {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <response>
   <app>{{APP_NAME}}</app>
-  <ferry>true</ferry>
+  <ferry>⛵ Ferry v{{FERRY_VERSION}}</ferry>
   <timestamp>${new Date().toISOString()}</timestamp>
   <server>
     <hostname>${hostname()}</hostname>

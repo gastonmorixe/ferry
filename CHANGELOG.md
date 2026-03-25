@@ -2,6 +2,18 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.6.3] - 2026-03-25
+
+### Changed
+- **Unified Ferry attribution across all 11 generators.** All response formats (HTML, JSON, XML, text) now display `Built with ⛵ Ferry v{version}` with a link to the GitHub repo. Previously the branding was inconsistent ("Deployed with Ferry" in some, missing version in others, boolean `true` in JSON/XML instead of version string).
+  - **HTML**: Subtitle and footer now read "Built with ⛵ Ferry" with GitHub link
+  - **JSON**: `"ferry"` field changed from `true` (boolean) to `"⛵ Ferry v{version}"` (string with version)
+  - **XML**: `<ferry>` element changed from `true` to `⛵ Ferry v{version}`
+  - **Text/Markdown**: Footer changed from "Deployed with Ferry" to `Built with ⛵ Ferry v{version}` with repo URL
+- **New tests** for Ferry attribution: all generators checked for "Built with" text, ⛵ emoji, GitHub repo link, and version string (not boolean) in ferry field
+- Test suite expanded from 32 to 34 tests
+- Version bumped to 0.6.3
+
 ## [0.6.2] - 2026-03-25
 
 ### Changed

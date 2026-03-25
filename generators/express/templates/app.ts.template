@@ -15,7 +15,7 @@ app.set("trust proxy", true);
 function buildPayload(req: Request) {
   return {
     app: APP_NAME,
-    ferry: true,
+    ferry: "⛵ Ferry v{{FERRY_VERSION}}",
     timestamp: new Date().toISOString(),
     server: {
       hostname: os.hostname(),
@@ -44,7 +44,7 @@ function buildXml(data: ReturnType<typeof buildPayload>): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <response>
   <app>${data.app}</app>
-  <ferry>true</ferry>
+  <ferry>⛵ Ferry v{{FERRY_VERSION}}</ferry>
   <timestamp>${data.timestamp}</timestamp>
   <server>
     <hostname>${data.server.hostname}</hostname>
@@ -72,7 +72,7 @@ function buildText(data: ReturnType<typeof buildPayload>): string {
 
   return `# ${data.app}
 
-ferry: true
+ferry: ⛵ Ferry v{{FERRY_VERSION}}
 timestamp: ${data.timestamp}
 
 ## Server
@@ -140,8 +140,8 @@ function buildHtml(req: Request): string {
   <div class="container">
     <h1>${escHtml(APP_NAME)}</h1>
     <p class="subtitle">
-      Express &middot; TypeScript &middot; deployed with
-      <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">Ferry</a>
+      Built with
+      <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">⛵ Ferry</a>
     </p>
 
     <h2>Server</h2>
@@ -173,7 +173,7 @@ function buildHtml(req: Request): string {
     </div>
 
     <footer>
-      Deployed with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">Ferry</a>
+      Built with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">⛵ Ferry</a>
     </footer>
   </div>
 </body>

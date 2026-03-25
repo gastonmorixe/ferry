@@ -15,7 +15,7 @@ def _request_data(request):
     headers = {k: v for k, v in request.headers.items()}
     return {
         "app": APP_NAME,
-        "ferry": True,
+        "ferry": f"⛵ Ferry v{FERRY_VERSION}",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "server": {
             "hostname": socket.gethostname(),
@@ -68,7 +68,7 @@ def index(request):
 <body>
 <div class="container">
   <h1>{APP_NAME}</h1>
-  <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a> v{FERRY_VERSION} &middot; Django</p>
+  <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry v{FERRY_VERSION}</a></p>
 
   <h2>Request</h2>
   {table(rows_request)}
@@ -87,7 +87,7 @@ def index(request):
   </div>
 
   <footer>
-    <a href="https://github.com/gastonmorixe/ferry">Deployed with Ferry</a>
+    <a href="https://github.com/gastonmorixe/ferry">Built with ⛵ Ferry</a>
   </footer>
 </div>
 </body>
@@ -112,7 +112,7 @@ def xml_view(request):
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <response>
   <app>{d["app"]}</app>
-  <ferry>true</ferry>
+  <ferry>⛵ Ferry v{FERRY_VERSION}</ferry>
   <timestamp>{d["timestamp"]}</timestamp>
   <server>
     <hostname>{srv["hostname"]}</hostname>
@@ -155,7 +155,7 @@ def text_view(request):
 - Timestamp: {d["timestamp"]}
 
 ---
-Deployed with Ferry v{FERRY_VERSION}
+Built with ⛵ Ferry v{FERRY_VERSION}
 https://github.com/gastonmorixe/ferry
 """
     return HttpResponse(text, content_type="text/plain; charset=utf-8")

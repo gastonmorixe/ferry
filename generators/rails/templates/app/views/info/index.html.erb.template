@@ -14,7 +14,7 @@
 <body>
 <div class="container">
   <h1><%= d[:app] %></h1>
-  <p class="subtitle">Deployed with <a href="https://github.com/gastonmorixe/ferry">Ferry</a> v<%= InfoController::FERRY_VERSION %> &middot; Rails</p>
+  <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry v<%= InfoController::FERRY_VERSION %></a></p>
 
   <h2>Request</h2>
   <table>
@@ -47,7 +47,7 @@
   </div>
 
   <footer>
-    <a href="https://github.com/gastonmorixe/ferry">Deployed with Ferry</a>
+    <a href="https://github.com/gastonmorixe/ferry">Built with ⛵ Ferry</a>
   </footer>
 </div>
 </body>
