@@ -12,7 +12,7 @@ jobs:
         with: { submodules: recursive }
       - uses: actions/setup-python@v6
         with: { python-version: "3.11" }
-      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck bats jq
       - run: python3 -m pip install -r requirements-dev.txt
       - run: make bootstrap
       - run: make lint
@@ -24,7 +24,7 @@ jobs:
         with: { submodules: recursive }
       - uses: actions/setup-python@v6
         with: { python-version: "3.11" }
-      - run: sudo apt-get update && sudo apt-get install -y bats jq
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck bats jq
       - run: python3 -m pip install -r requirements-dev.txt
       - run: make bootstrap
       - name: Unit and integration tests
@@ -37,7 +37,7 @@ jobs:
         with: { submodules: recursive }
       - uses: actions/setup-python@v6
         with: { python-version: "3.11" }
-      - run: sudo apt-get update && sudo apt-get install -y bats jq
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck bats jq
       - run: python3 -m pip install -r requirements-dev.txt
       - run: make bootstrap
       - name: Generator structure tests (no Docker)
@@ -78,6 +78,5 @@ jobs:
       - uses: actions/setup-python@v6
         with: { python-version: "3.11" }
       - run: python3 -m pip install -r requirements-dev.txt
-      - run: make bootstrap
       - name: Build + HTTP 200 (${{ matrix.gen }})
         run: ./scripts/smoke-test-generator.sh ${{ matrix.gen }} ${{ matrix.port }}
