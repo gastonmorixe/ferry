@@ -4,7 +4,7 @@
 
 <h1 align="center">Ferry</h1>
 
-<p align="center"><strong>Self-hosted PaaS scaffold for self-hosting web apps for free and zero open ports</strong></p>
+<p align="center"><strong>PaaS scaffold for self-hosting web apps for free and zero open ports</strong></p>
 
 Ferry combines 🐳 [Dokku](https://dokku.com) and 🌩️ [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) into a single workflow.
 
