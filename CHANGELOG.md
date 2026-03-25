@@ -2,6 +2,11 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.6.5] - 2026-03-25
+
+### Fixed
+- **Handle empty config.yml gracefully.** Preflight now detects a 0-byte config.yml and regenerates it from Dokku state (previously only handled missing files, not empty ones). All Python YAML snippets guard against `yaml.safe_load` returning `None` — read-only functions default to empty dict, mutating functions error with a clear message instead of a Python traceback.
+
 ## [0.6.4] - 2026-03-25
 
 ### Changed
