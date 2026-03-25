@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.6.3"
+FERRY_VERSION="0.6.4"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -2116,8 +2116,8 @@ cmd_remove() {
     echo ""
 
     if [[ -z "$name" ]]; then
-        echo -en "App name to remove: "
-        read -r name
+        tui_select_app "Remove App" || { info "Cancelled."; return 0; }
+        name="$_TUI_APP_SELECTED"
     fi
 
     if [[ -z "$name" ]]; then
@@ -2947,6 +2947,52 @@ tui_select() {
 }
 
 ###############################################################################
+# TUI: Select App
+###############################################################################
+
+# Shows a tui_select menu with all deployed apps + "Enter manually..." option.
+# Sets _TUI_APP_SELECTED to the chosen app name, or empty string on cancel.
+tui_select_app() {
+    local title="${1:-Select App}"
+    _TUI_APP_SELECTED=""
+
+    local apps_raw
+    apps_raw=$(dokku_list_apps 2>/dev/null) || true
+
+    local apps=()
+    if [[ -n "$apps_raw" ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && apps+=("$line")
+        done <<< "$apps_raw"
+    fi
+
+    if [[ ${#apps[@]} -eq 0 ]]; then
+        # No apps found — fall back to manual entry
+        echo -en "  App name: "
+        read -r _TUI_APP_SELECTED
+        return 0
+    fi
+
+    local options=()
+    local i
+    for i in "${apps[@]}"; do
+        options+=("$i")
+    done
+    options+=("Enter manually...")
+
+    tui_select "$title" "${options[@]}" || return 1
+
+    if (( _TUI_SELECTED == ${#apps[@]} )); then
+        # "Enter manually..." was selected
+        echo -en "  App name: "
+        read -r _TUI_APP_SELECTED
+    else
+        _TUI_APP_SELECTED="${apps[$_TUI_SELECTED]}"
+    fi
+    return 0
+}
+
+###############################################################################
 # Interactive Menu
 ###############################################################################
 
@@ -2973,14 +3019,12 @@ interactive_menu() {
             4) cmd_remove || warn "Remove failed — you can try again." ;;
             5) cmd_reload || warn "Reload failed — you can try again." ;;
             6)
-                prompt "App name"
-                read -r app_name
-                cmd_rebuild "$app_name" || warn "Rebuild failed."
+                tui_select_app "Rebuild App" && [[ -n "$_TUI_APP_SELECTED" ]] \
+                    && cmd_rebuild "$_TUI_APP_SELECTED" || warn "Rebuild failed."
                 ;;
             7)
-                prompt "App name"
-                read -r app_name
-                cmd_logs "$app_name" || warn "Logs failed."
+                tui_select_app "Tail Logs" && [[ -n "$_TUI_APP_SELECTED" ]] \
+                    && cmd_logs "$_TUI_APP_SELECTED" || warn "Logs failed."
                 ;;
             8) cmd_help ;;
             9) cmd_login || warn "Login failed — you can try again." ;;
