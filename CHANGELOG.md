@@ -2,6 +2,12 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.6.4] - 2026-03-25
+
+### Changed
+- **TUI app selector for remove, rebuild, and logs.** Instead of a bare text prompt ("App name to remove:"), these commands now show an arrow-key TUI menu listing all deployed Dokku apps, plus an "Enter manually..." option. Matches the select UI used everywhere else in Ferry.
+- New reusable `tui_select_app` helper builds on `tui_select` — queries `dokku_list_apps`, falls back to manual entry when no apps exist.
+
 ## [0.6.3] - 2026-03-25
 
 ### Changed
