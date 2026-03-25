@@ -5,33 +5,66 @@ on:
   pull_request:
 
 jobs:
-  lint-and-test:
+  lint:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-      - name: Install system dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bats jq shellcheck
+          sudo apt-get install -y shellcheck
+          python3 -m pip install -r requirements-dev.txt
 
-      - name: Install Python dependencies
-        run: python3 -m pip install -r requirements-dev.txt
+      - run: make bootstrap
+      - run: make lint
 
-      - name: Bootstrap dev environment
-        run: make bootstrap
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
-      - name: Lint shell code
-        run: make lint
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
 
-      - name: Run test suite
-        run: make test
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats jq
+          python3 -m pip install -r requirements-dev.txt
+
+      - run: make bootstrap
+      - name: Run unit and integration tests
+        run: |
+          bats test/unit
+          bats test/integration
+
+  generator-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats jq
+          python3 -m pip install -r requirements-dev.txt
+
+      - run: make bootstrap
+      - name: Run generator tests (structure + Docker build + HTTP smoke)
+        run: bats test/generators
