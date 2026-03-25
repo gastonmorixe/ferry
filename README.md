@@ -8,7 +8,7 @@
 
 Ferry combines 🐳 [Dokku](https://dokku.com) and 🌩️ [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) into a single workflow.
 
-It can scaffold a starter app with `ferry new`, or take an existing GitHub repo to a live HTTPS site with automatic 🌎 **DNS**, 🛬 **ingress routing**, and 🔒 **TLS termination** at Cloudflare's edge, so your server IP is **never exposed** while staying **100% free to self-host** even on dynamic residential IPs.
+Scaffold a starter app with `ferry new`, or take an existing GitHub repo to a live HTTPS site with automatic 🌎 **DNS**, 🛬 **ingress routing**, and 🔒 **TLS termination** at Cloudflare's edge, so your server IP is **never exposed** while staying **100% free to self-host** even on dynamic residential IPs.
 
 ```bash
 # Scaffold and deploy in one flow
