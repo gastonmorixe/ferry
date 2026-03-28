@@ -45,6 +45,7 @@ shared_style_css "$OUTPUT_DIR/static/style.css"
 # ---------------------------------------------------------------------------
 shared_gitignore    python "$OUTPUT_DIR"
 shared_dockerignore        "$OUTPUT_DIR"
+shared_app_json            "$OUTPUT_DIR"
 
 # ---------------------------------------------------------------------------
 # 5. Substitute {{VARIABLES}} in all generated files

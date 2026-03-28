@@ -2,6 +2,19 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.7.0] - 2026-03-27
+
+### Added
+- **Dokku app.json healthchecks for all 11 generators.** Every generated app now includes an `app.json` with a startup HTTP healthcheck that hits `/health` (or `/` for React/nginx). Dokku actively verifies the app responds before switching traffic during zero-downtime deploys, replacing the default 10-second blind wait. The healthcheck port is set explicitly to match `APP_PORT` (Dokku defaults to 5000 which would be wrong for most generators).
+- **Docker HEALTHCHECK in all 11 generator Dockerfiles.** Runtime health monitoring using the best tool available per base image: `wget --spider` for Alpine (Express, Next.js, NestJS, React, Go, Fiber), `python -c urllib` for Python slim (FastAPI, Django), `ruby -e net/http` for Ruby slim (Rails), and `wget` (installed) for Debian slim (Actix, Axum). Start periods tuned per framework: 5s for Go/Rust/nginx, 10s for Node/Python, 15s for Django/Next.js, 20s for Rails.
+- **Shared `app.json` template** in `generators/_shared/app.json.template` with `shared_app_json` helper in `helpers.sh`.
+- **4 new Bats tests** for healthcheck coverage: app.json presence + valid JSON + correct port in all generators, HEALTHCHECK in all Dockerfiles, correct health path (`/health` vs `/` for React).
+- **`network:set initial-network webserver`** during `ferry deploy` — ensures app containers start on the correct Docker network so nginx gets a routable upstream IP. Prevents 504 timeouts after reboots.
+
+### Changed
+- Rust generator runtime images (Actix, Axum) now install `wget` in the runtime stage for HEALTHCHECK support (~1 MB)
+- Version bumped to 0.7.0
+
 ## [0.6.6] - 2026-03-27
 
 ### Fixed

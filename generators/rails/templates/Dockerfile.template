@@ -6,4 +6,7 @@ RUN bundle install --without development test
 COPY . .
 ENV RAILS_ENV=production
 EXPOSE {{APP_PORT}}
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ruby -e "require 'net/http'; exit(Net::HTTP.get_response(URI('http://127.0.0.1:{{APP_PORT}}/health')).is_a?(Net::HTTPSuccess) ? 0 : 1)" || exit 1
+
 CMD ["bundle", "exec", "rails", "server", "-b", "0.0.0.0", "-p", "{{APP_PORT}}"]

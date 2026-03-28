@@ -35,6 +35,7 @@ template_copy "$TEMPLATES_DIR/Dockerfile.template"       "$OUTPUT_DIR"
 shared_gitignore   "node"   "$OUTPUT_DIR"
 shared_dockerignore         "$OUTPUT_DIR"
 shared_style_css            "$OUTPUT_DIR/style.css"
+shared_app_json             "$OUTPUT_DIR"
 
 # ── Substitute {{placeholders}} in every output file ────────────────────────
 template_sub_all "$OUTPUT_DIR"

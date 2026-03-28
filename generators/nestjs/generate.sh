@@ -36,6 +36,7 @@ template_copy "$TMPL/src/app.service.ts.template"     "$OUTPUT_DIR/src"
 shared_gitignore  "node" "$OUTPUT_DIR"
 shared_dockerignore      "$OUTPUT_DIR"
 shared_style_css         "$OUTPUT_DIR/public/style.css"
+shared_app_json          "$OUTPUT_DIR"
 
 # --- Substitute {{VAR}} placeholders in every file ---
 template_sub_all "$OUTPUT_DIR"

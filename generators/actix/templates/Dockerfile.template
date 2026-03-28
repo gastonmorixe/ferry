@@ -19,7 +19,7 @@ RUN touch src/main.rs \
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -29,5 +29,7 @@ COPY style.css ./style.css
 
 ENV PORT={{APP_PORT}}
 EXPOSE {{APP_PORT}}
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:{{APP_PORT}}/health || exit 1
 
 CMD ["./server"]

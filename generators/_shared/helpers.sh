@@ -62,6 +62,15 @@ shared_style_css() {
     cp "$SHARED_DIR/assets/style.css" "$dest"
 }
 
+# Copy shared app.json healthcheck template
+# Usage: shared_app_json <dest_dir> [<health_path>]
+# Default health_path is /health; React should pass /
+shared_app_json() {
+    local dest_dir="$1" health_path="${2:-/health}"
+    cp "$SHARED_DIR/app.json.template" "$dest_dir/app.json"
+    sed -i "s|{{HEALTHCHECK_PATH}}|${health_path}|g" "$dest_dir/app.json"
+}
+
 # Count files in the output directory (for reporting)
 count_files() {
     local dir="$1"

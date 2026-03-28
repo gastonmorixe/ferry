@@ -22,6 +22,7 @@ generate() {
     shared_gitignore    rust   "$out_dir"
     shared_dockerignore        "$out_dir"
     shared_style_css           "$out_dir/style.css"
+    shared_app_json            "$out_dir"
 
     # Substitute {{APP_NAME}}, {{APP_PORT}}, {{FERRY_VERSION}}, {{YEAR}}
     template_sub_all "$out_dir"

@@ -390,6 +390,64 @@ setup() {
     assert_success
 }
 
+# ── Healthcheck coverage ────────────────────────────────────────────────────
+
+@test "all generators include app.json with healthcheck" {
+    local -A ports=(
+        [express]=5000 [fastapi]=8000 [nextjs]=3000 [nestjs]=3000
+        [react]=80 [django]=8000 [rails]=3000 [go-net]=8080
+        [go-fiber]=3000 [axum]=3000 [actix]=8080
+    )
+    for gen in "${!ports[@]}"; do
+        run_generator "$gen" "test-${gen}" "${ports[$gen]}"
+        assert_file_exists "$_GEN_OUT/app.json"
+
+        run bash -c "jq . '$_GEN_OUT/app.json' > /dev/null"
+        assert_success
+
+        run grep '"port"' "$_GEN_OUT/app.json"
+        assert_success
+        assert_output --partial "${ports[$gen]}"
+    done
+}
+
+@test "all generators include HEALTHCHECK in Dockerfile" {
+    local -A ports=(
+        [express]=5000 [fastapi]=8000 [nextjs]=3000 [nestjs]=3000
+        [react]=80 [django]=8000 [rails]=3000 [go-net]=8080
+        [go-fiber]=3000 [axum]=3000 [actix]=8080
+    )
+    for gen in "${!ports[@]}"; do
+        run_generator "$gen" "test-${gen}" "${ports[$gen]}"
+
+        run grep 'HEALTHCHECK' "$_GEN_OUT/Dockerfile"
+        assert_success
+    done
+}
+
+@test "react app.json healthcheck uses root path" {
+    run_generator "react" "test-app" "80"
+
+    run bash -c "jq -r '.healthchecks.web[0].path' '$_GEN_OUT/app.json'"
+    assert_success
+    assert_output "/"
+}
+
+@test "server generators app.json healthcheck uses /health path" {
+    local -A ports=(
+        [express]=5000 [fastapi]=8000 [nextjs]=3000 [nestjs]=3000
+        [django]=8000 [rails]=3000 [go-net]=8080
+        [go-fiber]=3000 [axum]=3000 [actix]=8080
+    )
+    for gen in "${!ports[@]}"; do
+        run_generator "$gen" "test-${gen}" "${ports[$gen]}"
+
+        run bash -c "jq -r '.healthchecks.web[0].path' '$_GEN_OUT/app.json'"
+        assert_success
+        assert_output "/health"
+    done
+}
+
 # ── Ferry attribution branding ──────────────────────────────────────────────
 
 @test "all generators include Ferry attribution in generated output" {
