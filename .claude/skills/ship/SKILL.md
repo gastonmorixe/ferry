@@ -7,7 +7,17 @@ description: Use when finishing a feature or fix and ready to release — runs l
 
 ## Overview
 
-Cascade checklist that validates, versions, commits, and pushes a Ferry release. Runs from a feature branch, merges to main, tags, and pushes.
+Cascade checklist that validates, versions, commits, and pushes a Ferry release. Works from main (direct push) or from a feature branch (merge to main, then push).
+
+## CRITICAL: Never Switch Branches
+
+**NEVER create a branch, switch branches, or run `git checkout`/`git switch` during /ship.**
+
+This is a production machine running Dokku + Cloudflare Tunnel. Branch switches can destroy gitignored runtime config files (like `tunnels/providers/cloudflare/config.yml`), causing cascading Docker failures that take the entire tunnel offline.
+
+- If on main: ship directly (commit, tag, push). No branch needed.
+- If on a feature branch: ship from there (commit, merge to main, tag, push).
+- If the user hasn't already created a feature branch, do NOT create one. Just ship from wherever you are.
 
 ## When to Use
 
@@ -17,6 +27,12 @@ Cascade checklist that validates, versions, commits, and pushes a Ferry release.
 
 ## Workflow
 
+**From main (most common):**
+```
+main → lint → test → docs → audit → version → changelog → commit → tag → push
+```
+
+**From a feature branch (only if already on one):**
 ```
 feature-branch → lint → test → docs → audit → version → changelog → commit → merge main → tag → push
 ```
@@ -25,15 +41,15 @@ feature-branch → lint → test → docs → audit → version → changelog �
 
 ### 1. Branch Check
 
-Confirm we're on a feature branch (not main). If on main, warn and ask to proceed.
+Check which branch you're on. Do NOT switch or create branches.
 
 ```bash
 current=$(git branch --show-current)
-if [ "$current" = "main" ]; then
-  # warn: "You're on main. Create a feature branch or proceed directly?"
-fi
 git status --short  # must be clean or have only expected changes
 ```
+
+If on main: proceed directly — steps 9 (merge) and 12 (cleanup) are skipped.
+If on a feature branch: the full flow including merge applies.
 
 ### 2. Lint
 
@@ -119,7 +135,9 @@ EOF
 )"
 ```
 
-### 9. Merge to Main
+### 9. Merge to Main (feature branch only — skip if on main)
+
+Only if you're on a feature branch. If on main, skip to step 10.
 
 ```bash
 git checkout main
@@ -141,7 +159,7 @@ git push origin main
 git push origin v{VERSION}
 ```
 
-### 12. Cleanup (optional)
+### 12. Cleanup (feature branch only — skip if shipped from main)
 
 Ask user if they want to delete the feature branch:
 ```bash
@@ -152,7 +170,7 @@ git branch -d {feature-branch}
 
 | Step | Command | Must pass |
 |------|---------|-----------|
-| Branch | `git branch --show-current` | Not main (or acknowledged) |
+| Branch | `git branch --show-current` | Note which branch (do NOT switch) |
 | Lint | `make lint` | exit 0 |
 | Syntax | `bash -n ferry` | exit 0 |
 | Unit tests | `bats test/unit/` | all pass |
@@ -162,13 +180,14 @@ git branch -d {feature-branch}
 | Changelog | `head CHANGELOG.md` | has version entry |
 | Data audit | grep for personal data | nothing found |
 | Commit | `git commit` | clean message |
-| Merge | `git merge --no-ff` | no conflicts |
+| Merge (feature branch only) | `git merge --no-ff` | no conflicts |
 | Tag | `git tag v{VERSION}` | created |
 | Push | `git push origin main` | success |
 | Push tag | `git push origin v{VERSION}` | success |
 
 ## Red Flags — STOP
 
+- **Creating or switching branches** — NEVER do this, it can destroy runtime config and take the tunnel offline
 - Personal data in staged files
 - Tests failing
 - Lint errors

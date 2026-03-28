@@ -2,6 +2,12 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.7.1] - 2026-03-28
+
+### Changed
+- **CLAUDE.md and /ship skill updated** with production branch-safety rules. Documents that branch switches destroy gitignored runtime config on this Dokku production machine and must never be done unprompted.
+- Version bumped to 0.7.1
+
 ## [0.7.0] - 2026-03-27
 
 ### Added
