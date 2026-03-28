@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.6.5"
+FERRY_VERSION="0.6.6"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -1981,6 +1981,17 @@ cmd_deploy() {
         success "Resource limits set (memory: 256 MB)"
     else
         warn "Failed to set resource limits: $resource_output"
+    fi
+
+    # Ensure the app starts on the webserver network so nginx gets the
+    # correct IP. Without this, nginx may grab the bridge network IP
+    # which is unreachable from cloudflared/dokku after a restart.
+    local net_output net_exit=0
+    net_output=$(dokku_cmd network:set "$name" initial-network webserver 2>&1) || net_exit=$?
+    if [[ $net_exit -eq 0 ]]; then
+        success "Network set to webserver"
+    else
+        warn "Failed to set initial network: $net_output"
     fi
 
     # === Step: DNS ===

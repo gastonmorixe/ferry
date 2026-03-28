@@ -2,6 +2,11 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.6.6] - 2026-03-27
+
+### Fixed
+- **Deploy sets `initial-network webserver` on every app.** Without this, Dokku app containers start on Docker's default bridge network, and nginx grabs the bridge IP (`172.17.0.x`) which is unreachable from cloudflared. After a reboot or restart, all apps would hang with 504/timeout because nginx upstream pointed to the wrong network. Now `ferry deploy` explicitly sets `network:set initial-network webserver` during app creation so the container starts on the correct network from the beginning.
+
 ## [0.6.5] - 2026-03-25
 
 ### Fixed
