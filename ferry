@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.7.1"
+FERRY_VERSION="0.7.2"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -1185,7 +1185,10 @@ dns_check() {
 
 cloudflared_restart() {
     info "Restarting cloudflared..."
-    docker compose -f "$COMPOSE_FILE" restart cloudflared 2>&1
+    # Use 'up -d' instead of 'restart' — restart cannot recover a container
+    # that failed to create (e.g. exit 127 from a stale bind-mount on reboot).
+    # 'up -d --force-recreate' rebuilds the container from the compose definition.
+    docker compose -f "$COMPOSE_FILE" up -d --force-recreate cloudflared 2>&1
 
     local attempts=0
     local max_attempts=5
@@ -1521,8 +1524,8 @@ cmd_status() {
     if [[ -z "$apps" ]]; then
         dim "(no apps)"
     else
-        printf "    ${C_DIM}%-14s %-30s %-14s %-14s %-5s${C_RESET}\n" "NAME" "DOMAIN" "PORTS" "STATUS" "DNS"
-        printf "    ${C_CHROME}%s${C_RESET}\n" "$(printf '─%.0s' $(seq 1 75))"
+        printf "    ${C_DIM}%-14s %-30s %-14s %-14s %-5s %s${C_RESET}\n" "NAME" "DOMAIN" "PORTS" "STATUS" "DNS" "LIVE"
+        printf "    ${C_CHROME}%s${C_RESET}\n" "$(printf '─%.0s' $(seq 1 85))"
 
         while IFS= read -r app; do
             local domain ports status dns_result dns_icon status_icon
@@ -1543,8 +1546,38 @@ cmd_status() {
                 *)              status_icon="${C_ERROR}○${C_RESET}" ;;
             esac
 
+            # Print row with "checking..." placeholder
             printf "    %-14s %-30s %-14s " "$app" "$domain" "$ports"
-            echo -e "${status_icon} ${status}     ${dns_icon}"
+            echo -en "${status_icon} ${status}     ${dns_icon}  ${C_DIM}checking...${C_RESET}"
+
+            # Live end-to-end HTTP check through the public domain
+            local live_result live_color
+            if [[ -n "$domain" && "$status" == "running" ]]; then
+                local http_code
+                http_code=$(curl -so /dev/null -w '%{http_code}' --max-time 5 \
+                    "https://${domain}" 2>/dev/null) || http_code="000"
+                if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+                    live_result="[${http_code}] OK"
+                    live_color="$C_SUCCESS"
+                elif [[ "$http_code" == "000" ]]; then
+                    live_result="[timeout]"
+                    live_color="$C_ERROR"
+                elif [[ "$http_code" =~ ^3[0-9][0-9]$ ]]; then
+                    live_result="[${http_code}]"
+                    live_color="$C_WARN"
+                else
+                    live_result="[${http_code}] FAIL"
+                    live_color="$C_ERROR"
+                fi
+            else
+                live_result="—"
+                live_color="$C_DIM"
+            fi
+
+            # Overwrite "checking..." with actual result
+            printf "\r\033[K"
+            printf "    %-14s %-30s %-14s " "$app" "$domain" "$ports"
+            echo -e "${status_icon} ${status}     ${dns_icon}  ${live_color}${live_result}${C_RESET}"
         done <<< "$apps"
     fi
 

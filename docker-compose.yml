@@ -2,9 +2,9 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
-    command: tunnel --config /etc/cloudflared/config.yml run
+    command: tunnel --config /etc/cloudflared/tunnel/config.yml run
     volumes:
-      - ./tunnels/providers/cloudflare/config.yml:/etc/cloudflared/config.yml:ro
+      - ./tunnels/providers/cloudflare:/etc/cloudflared/tunnel:ro
       - ${HOME}/.cloudflared/${TUNNEL_ID}.json:/etc/cloudflared/credentials.json:ro
     dns:
       - 172.17.0.1
@@ -31,6 +31,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     dns:
       - 172.17.0.1
+    pid: host
     mem_limit: 256m
     networks:
       - webserver
@@ -38,9 +39,8 @@ services:
 
 networks:
   webserver:
-    name: webserver
-    driver: bridge
+    external: true
 
 volumes:
   dokku-data:
-    name: dokku-data
+    external: true

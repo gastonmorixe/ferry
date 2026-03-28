@@ -2,6 +2,34 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.7.2] - 2026-03-28
+
+### Fixed
+- **cloudflared dies on every reboot — for real this time.** This bug has persisted for months across multiple "fix" attempts. Every single reboot left all deployed apps unreachable because cloudflared failed to start. Here is the full technical postmortem:
+
+  **The symptom:** After any Pi reboot, `cloudflared` container exits with code 127. The error: `error mounting "/home/pi/ferry/tunnels/providers/cloudflare/config.yml" to rootfs at "/etc/cloudflared/config.yml": not a directory`. All apps served through the tunnel go down and stay down until someone manually runs `ferry`.
+
+  **The root cause — a Docker bind-mount design flaw:** The `docker-compose.yml` mounted a single **file** (`config.yml:/etc/cloudflared/config.yml:ro`). Docker has a well-known behavior: when the daemon restarts and tries to restore a container, if the bind-mount source file is momentarily unavailable (race condition during boot — filesystem not fully ready, inode timing, etc.), Docker silently creates a **directory** at that path instead of a file. Once `config.yml` becomes a directory, the mount fails with "not a directory" and the container cannot be created at all. The `restart: unless-stopped` policy is useless here because container **creation** itself fails — Docker never gets to the runtime phase where restart policies apply.
+
+  **Why previous fixes didn't work:** Ferry already had code to detect when `config.yml` was a directory and fix it (preflight checks since v0.6.5). But this only runs when a user interactively launches `ferry`. The problem happens at boot time, before anyone runs Ferry. The detection code was treating the symptom (directory placeholder), not the cause (file-level bind mount). Additionally, `cloudflared_restart()` used `docker compose restart` which cannot recover a container that failed at the OCI create stage — it only works on containers that are already running or cleanly stopped.
+
+  **The actual fix — two changes:**
+
+  1. **Mount the directory, not the file.** Changed docker-compose.yml from mounting `config.yml` (a file) to mounting the parent directory `tunnels/providers/cloudflare/` → `/etc/cloudflared/tunnel/` (a directory). Docker never creates directory placeholders for directory bind-mounts — a directory mounted to a directory is always valid. The cloudflared command was updated to read from `/etc/cloudflared/tunnel/config.yml`. The credentials file mount (`${TUNNEL_ID}.json:/etc/cloudflared/credentials.json`) is unaffected and stays as-is (it lives in `~/.cloudflared/` which is always present).
+
+  2. **`cloudflared_restart()` now uses `up -d --force-recreate` instead of `restart`.** `docker compose restart` sends SIGHUP to a running container — it cannot recover a container stuck in "Created" or "Exited (127)" state from a failed OCI mount. `docker compose up -d --force-recreate` tears down whatever exists and rebuilds the container from the compose definition, which handles any state.
+
+  **Timeline of the bug:** This issue has been present since Ferry first used a file-level bind mount for `config.yml` in docker-compose.yml. It manifested on every reboot of the Raspberry Pi 5. Previous attempts added preflight directory detection (v0.6.5), empty-config recovery (v0.6.5), and config rebuild from Dokku state — all of which helped with interactive recovery but none prevented the boot-time failure. The underlying cause (Docker's handling of file bind-mounts during daemon restart) was never addressed until now.
+
+### Changed
+- `docker-compose.yml`: cloudflared config volume changed from file mount to directory mount (`./tunnels/providers/cloudflare:/etc/cloudflared/tunnel:ro`)
+- `docker-compose.yml`: cloudflared command updated to `tunnel --config /etc/cloudflared/tunnel/config.yml run`
+- `docker-compose.yml`: `webserver` network and `dokku-data` volume marked `external: true` — eliminates ownership warnings after project rename from `personal-webserver` to `ferry`
+- `docker-compose.yml`: added `pid: host` to Dokku service — fixes Dokku's "port listening check" healthcheck which requires host PID namespace access to `nsenter` into app containers
+- `cloudflared_restart()`: replaced `docker compose restart` with `docker compose up -d --force-recreate` for robust recovery from any container state
+- `ferry deploy`: now sets `network:set initial-network webserver` on every app so containers start on the correct Docker network and nginx gets a routable upstream IP (prevents 504 timeouts after reboots)
+- Version bumped to 0.7.2
+
 ## [0.7.1] - 2026-03-28
 
 ### Changed
