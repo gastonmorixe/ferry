@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v5
         with: { submodules: recursive }
       - uses: actions/setup-python@v6
-        with: { python-version: "3.11" }
+        with: { python-version: "3.12" }
       - run: sudo apt-get update && sudo apt-get install -y shellcheck bats jq
       - run: python3 -m pip install -r requirements-dev.txt
       - run: make bootstrap
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v5
         with: { submodules: recursive }
       - uses: actions/setup-python@v6
-        with: { python-version: "3.11" }
+        with: { python-version: "3.12" }
       - run: sudo apt-get update && sudo apt-get install -y shellcheck bats jq
       - run: python3 -m pip install -r requirements-dev.txt
       - run: make bootstrap
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v5
         with: { submodules: recursive }
       - uses: actions/setup-python@v6
-        with: { python-version: "3.11" }
+        with: { python-version: "3.12" }
       - run: sudo apt-get update && sudo apt-get install -y shellcheck bats jq
       - run: python3 -m pip install -r requirements-dev.txt
       - run: make bootstrap
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@v5
         with: { submodules: recursive }
       - uses: actions/setup-python@v6
-        with: { python-version: "3.11" }
+        with: { python-version: "3.12" }
       - run: python3 -m pip install -r requirements-dev.txt
       - name: Build + HTTP 200 (${{ matrix.gen }})
         run: ./scripts/smoke-test-generator.sh ${{ matrix.gen }} ${{ matrix.port }}
