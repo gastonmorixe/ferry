@@ -2,6 +2,26 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.8.0] - 2026-03-29
+
+### Changed
+- **Tunnel ingress is now managed via the Cloudflare API instead of a local config.yml file.** This eliminates the entire class of bugs that plagued Ferry for months — file corruption, Docker directory placeholders, config.yml disappearing on reboot, and ~50 lines of preflight recovery code. cloudflared now runs as a remotely-managed tunnel using `TUNNEL_TOKEN`, with zero local volume mounts for configuration.
+- **docker-compose.yml simplified.** cloudflared no longer mounts config.yml or credentials.json volumes. Uses `TUNNEL_TOKEN` environment variable and `tunnel run` command. No bind mounts means no file-level mount bugs.
+- **`yaml_*` functions now call the Cloudflare API** (`GET`/`PUT /accounts/{id}/cfd_tunnel/{id}/configurations`) instead of reading/writing a local YAML file. Function names retained for backward compatibility. No more Python/PyYAML dependency for config operations.
+- **Preflight simplified.** Removed ~50 lines of config.yml recovery code (directory placeholder detection, empty file detection, rebuild-from-Dokku logic). Ingress state lives on Cloudflare's servers now.
+
+### Removed
+- `_generate_default_config()` — no longer needed (no local config file)
+- `_generate_config_from_dokku()` — no longer needed (ingress managed via API)
+- `CONFIG_FILE` variable — no longer used
+- config.yml volume mount from docker-compose.yml
+- credentials.json volume mount from docker-compose.yml
+
+### Added
+- `_tunnel_get_ingress()` — reads tunnel ingress from Cloudflare API
+- `_tunnel_put_ingress()` — writes tunnel ingress to Cloudflare API
+- `TUNNEL_TOKEN` in `.env` for remotely-managed tunnel authentication
+
 ## [0.7.2] - 2026-03-28
 
 ### Fixed

@@ -6,14 +6,15 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.7.2"
+FERRY_VERSION="0.8.0"
 ###############################################################################
 # Constants & Config
 ###############################################################################
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
-CONFIG_FILE="$SCRIPT_DIR/tunnels/providers/cloudflare/config.yml"
+# CONFIG_FILE is no longer used — ingress is managed via the Cloudflare API
+# (remotely-managed tunnel). Kept as a comment for historical reference.
 ENV_FILE="$SCRIPT_DIR/.env"
 CERT_DIR="$SCRIPT_DIR/tunnels/providers/cloudflare"
 
@@ -542,10 +543,6 @@ cleanup() {
     tput cnorm 2>/dev/null || true
     echo ""
     warn "Interrupted! Operation may be incomplete."
-    if [[ -f "${CONFIG_FILE}.bak" ]]; then
-        warn "A backup of config.yml exists at: ${CONFIG_FILE}.bak"
-        warn "To restore: cp ${CONFIG_FILE}.bak ${CONFIG_FILE}"
-    fi
     exit 130
 }
 
@@ -555,102 +552,9 @@ cleanup() {
 # Config Generation
 ###############################################################################
 
-_generate_default_config() {
-    # Generate a minimal cloudflared config.yml from TUNNEL_ID
-    if [[ -z "$TUNNEL_ID" ]]; then
-        error "TUNNEL_ID not set — cannot generate config.yml"
-        return 1
-    fi
-
-    python3 - "$CONFIG_FILE" "$TUNNEL_ID" <<'PYEOF'
-import sys, yaml, os
-
-config_path = sys.argv[1]
-tunnel_id = sys.argv[2]
-
-os.makedirs(os.path.dirname(config_path), exist_ok=True)
-
-cfg = {
-    "tunnel": tunnel_id,
-    "credentials-file": "/etc/cloudflared/credentials.json",
-    "ingress": [
-        {"service": "http_status:404"}
-    ]
-}
-
-with open(config_path, "w") as f:
-    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-
-print("ok")
-PYEOF
-}
-
-_generate_config_from_dokku() {
-    # Rebuild cloudflared config.yml from current Dokku app domains.
-    if [[ -z "$TUNNEL_ID" ]]; then
-        error "TUNNEL_ID not set — cannot rebuild config.yml"
-        return 1
-    fi
-
-    local domains_file
-    domains_file=$(mktemp)
-
-    local apps
-    if ! apps=$(dokku_list_apps 2>/dev/null); then
-        rm -f "$domains_file"
-        error "Failed to list Dokku apps while rebuilding config.yml"
-        return 1
-    fi
-    while IFS= read -r app; do
-        [[ -z "$app" ]] && continue
-        local domains
-        if ! domains=$(dokku_app_domains_all "$app"); then
-            rm -f "$domains_file"
-            error "Failed to read Dokku domains for '$app' while rebuilding config.yml"
-            return 1
-        fi
-        while IFS= read -r domain; do
-            [[ -n "$domain" ]] && printf '%s\n' "$domain" >> "$domains_file"
-        done <<< "$domains"
-    done <<< "$apps"
-
-    python3 - "$CONFIG_FILE" "$TUNNEL_ID" "$domains_file" <<'PYEOF'
-import os, sys, yaml
-
-config_path = sys.argv[1]
-tunnel_id = sys.argv[2]
-domains_path = sys.argv[3]
-
-os.makedirs(os.path.dirname(config_path), exist_ok=True)
-
-domains = []
-seen = set()
-with open(domains_path) as f:
-    for raw in f:
-        domain = raw.strip()
-        if not domain or domain in seen:
-            continue
-        seen.add(domain)
-        domains.append(domain)
-
-ingress = [{"hostname": domain, "service": "http://dokku:80"} for domain in domains]
-ingress.append({"service": "http_status:404"})
-
-cfg = {
-    "tunnel": tunnel_id,
-    "credentials-file": "/etc/cloudflared/credentials.json",
-    "ingress": ingress,
-}
-
-with open(config_path, "w") as f:
-    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-
-print(f"ok: {len(domains)} app rule(s)")
-PYEOF
-    local rc=$?
-    rm -f "$domains_file"
-    return $rc
-}
+# _generate_default_config and _generate_config_from_dokku removed in v0.8.0.
+# Ingress is now managed via the Cloudflare API (remotely-managed tunnel).
+# No local config.yml file is needed.
 
 ###############################################################################
 # Preflight Checks
@@ -677,54 +581,6 @@ preflight() {
 
     if [[ -f "$COMPOSE_FILE" ]]; then
         running="$(docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}:{{.State}}' 2>/dev/null || true)"
-    fi
-
-    # Docker creates config.yml as a directory when the host file is missing
-    if [[ -d "$CONFIG_FILE" ]]; then
-        warn "config.yml is a directory (likely created by Docker) — removing so it can be regenerated as a file"
-        rm -rf "$CONFIG_FILE"
-    fi
-
-    # Treat empty config.yml the same as missing — yaml.safe_load returns None
-    if [[ -f "$CONFIG_FILE" ]] && [[ ! -s "$CONFIG_FILE" ]]; then
-        warn "config.yml is empty — removing so it can be regenerated"
-        rm -f "$CONFIG_FILE"
-    fi
-
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        if echo "$running" | grep -q "dokku:running"; then
-            local existing_apps
-            if ! existing_apps=$(dokku_list_apps 2>/dev/null); then
-                error "Failed to list Dokku apps while recovering missing config.yml"
-                ((errors++)) || true
-            elif [[ -n "$existing_apps" ]]; then
-                warn "config.yml not found — rebuilding from existing Dokku apps to avoid dropping routes..."
-                if _generate_config_from_dokku; then
-                    success "Rebuilt $CONFIG_FILE from Dokku app domains"
-                else
-                    error "Failed to rebuild config.yml from Dokku"
-                    ((errors++)) || true
-                fi
-            elif [[ -n "$TUNNEL_ID" ]]; then
-                info "config.yml not found — generating default..."
-                if _generate_default_config; then
-                    success "Generated $CONFIG_FILE"
-                else
-                    error "Failed to generate config.yml"
-                    ((errors++)) || true
-                fi
-            else
-                error "cloudflared config.yml not found at $CONFIG_FILE"
-                ((errors++)) || true
-            fi
-        elif [[ -n "$TUNNEL_ID" ]]; then
-            error "cloudflared config.yml not found at $CONFIG_FILE"
-            error "Dokku is not running, so Ferry refuses to generate a blank config automatically."
-            ((errors++)) || true
-        else
-            error "cloudflared config.yml not found at $CONFIG_FILE"
-            ((errors++)) || true
-        fi
     fi
 
     if [[ -z "$TUNNEL_ID" ]]; then
@@ -755,9 +611,13 @@ preflight() {
 }
 
 sync_missing_ingress_from_dokku() {
-    # Ensure every Dokku app domain exists in cloudflared ingress.
-    local apps added=0
+    # Ensure every Dokku app domain exists in tunnel ingress (via API).
+    local apps
     apps=$(dokku_list_apps 2>/dev/null) || return 1
+    local ingress
+    ingress=$(_tunnel_get_ingress) || return 1
+
+    local added=0
     while IFS= read -r app; do
         [[ -z "$app" ]] && continue
         local domains
@@ -765,13 +625,37 @@ sync_missing_ingress_from_dokku() {
         while IFS= read -r domain; do
             [[ -z "$domain" ]] && continue
             local has
-            has=$(yaml_has_hostname "$domain")
+            has=$(printf '%s' "$ingress" | python3 -c "
+import json, sys
+hostname = sys.argv[1]
+rules = json.load(sys.stdin)
+for r in rules:
+    if r.get('hostname') == hostname:
+        print('yes')
+        sys.exit(0)
+print('no')
+" "$domain")
             if [[ "$has" != "yes" ]]; then
-                yaml_add_ingress "$domain" "http://dokku:80" >/dev/null || return 1
+                # Add to local list, will push once at the end
+                ingress=$(printf '%s' "$ingress" | python3 -c "
+import json, sys
+hostname = sys.argv[1]
+rules = json.load(sys.stdin)
+new_rule = {'hostname': hostname, 'service': 'http://dokku:80'}
+if len(rules) > 0 and 'hostname' not in rules[-1]:
+    rules.insert(-1, new_rule)
+else:
+    rules.append(new_rule)
+print(json.dumps(rules))
+" "$domain") || return 1
                 ((added++)) || true
             fi
         done <<< "$domains"
     done <<< "$apps"
+
+    if ((added > 0)); then
+        _tunnel_put_ingress "$ingress" >/dev/null || return 1
+    fi
     echo "$added"
 }
 
@@ -799,168 +683,140 @@ app_effective_status() {
 }
 
 ###############################################################################
-# YAML Operations (via Python3 + PyYAML)
+# Tunnel Ingress Operations (via Cloudflare API)
 ###############################################################################
 
+# Fetch current tunnel ingress from the Cloudflare API.
+# Prints JSON array of ingress rules to stdout.
+_tunnel_get_ingress() {
+    local response
+    response=$(cf_api "GET" "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" 2>/dev/null) || return 1
+    printf '%s' "$response" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+if not data.get('success'):
+    print('ERROR: ' + str(data.get('errors',[])), file=sys.stderr)
+    sys.exit(1)
+ingress = data.get('result',{}).get('config',{}).get('ingress',[])
+print(json.dumps(ingress))
+"
+}
+
+# Push a full ingress list to the Cloudflare API.
+# Expects JSON array on stdin.
+_tunnel_put_ingress() {
+    local ingress_json="$1"
+    local body
+    body=$(printf '{"config":{"ingress":%s}}' "$ingress_json")
+    local response
+    response=$(cf_api "PUT" "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" "$body" 2>/dev/null) || return 1
+    if ! cf_api_ok "$response"; then
+        error "Failed to update tunnel config: $(cf_api_error "$response")"
+        return 1
+    fi
+    printf '%s' "$response"
+}
+
 yaml_list_ingress() {
-    python3 - "$CONFIG_FILE" <<'PYEOF'
-import sys, yaml
-
-with open(sys.argv[1]) as f:
-    cfg = yaml.safe_load(f) or {}
-
-for rule in cfg.get("ingress", []):
-    hostname = rule.get("hostname", "(catch-all)")
-    service = rule.get("service", "?")
-    print(f"{hostname}\t{service}")
-PYEOF
+    local ingress
+    ingress=$(_tunnel_get_ingress) || return 1
+    printf '%s' "$ingress" | python3 -c "
+import json, sys
+rules = json.load(sys.stdin)
+for r in rules:
+    hostname = r.get('hostname', '(catch-all)')
+    service = r.get('service', '?')
+    print(f'{hostname}\t{service}')
+"
 }
 
 yaml_has_hostname() {
     local hostname="$1"
-    python3 - "$CONFIG_FILE" "$hostname" <<'PYEOF'
-import sys, yaml
-
-with open(sys.argv[1]) as f:
-    cfg = yaml.safe_load(f) or {}
-
-hostname = sys.argv[2]
-for rule in cfg.get("ingress", []):
-    if rule.get("hostname") == hostname:
-        print("yes")
+    local ingress
+    ingress=$(_tunnel_get_ingress) || { echo "no"; return 1; }
+    printf '%s' "$ingress" | python3 -c "
+import json, sys
+hostname = sys.argv[1]
+rules = json.load(sys.stdin)
+for r in rules:
+    if r.get('hostname') == hostname:
+        print('yes')
         sys.exit(0)
-print("no")
-PYEOF
+print('no')
+" "$hostname"
 }
 
 yaml_add_ingress() {
     local hostname="$1"
     local service="$2"
-    python3 - "$CONFIG_FILE" "$hostname" "$service" <<'PYEOF'
-import sys, yaml, shutil
+    local ingress
+    ingress=$(_tunnel_get_ingress) || return 1
 
-config_path = sys.argv[1]
-hostname = sys.argv[2]
-service = sys.argv[3]
-
-# Backup
-shutil.copy2(config_path, config_path + ".bak")
-
-with open(config_path) as f:
-    cfg = yaml.safe_load(f)
-
-if not cfg:
-    print("ERROR: config.yml is empty or invalid", file=sys.stderr)
-    sys.exit(1)
-
-ingress = cfg.get("ingress", [])
+    local new_ingress
+    new_ingress=$(printf '%s' "$ingress" | python3 -c "
+import json, sys
+hostname = sys.argv[1]
+service = sys.argv[2]
+rules = json.load(sys.stdin)
 
 # Check duplicate
-for rule in ingress:
-    if rule.get("hostname") == hostname:
-        print(f"ERROR: hostname '{hostname}' already exists in ingress", file=sys.stderr)
+for r in rules:
+    if r.get('hostname') == hostname:
+        print(f\"ERROR: hostname '{hostname}' already exists in ingress\", file=sys.stderr)
         sys.exit(1)
 
 # Insert before catch-all (last rule)
-new_rule = {"hostname": hostname, "service": service}
-if len(ingress) > 0 and "hostname" not in ingress[-1]:
-    ingress.insert(-1, new_rule)
+new_rule = {'hostname': hostname, 'service': service}
+if len(rules) > 0 and 'hostname' not in rules[-1]:
+    rules.insert(-1, new_rule)
 else:
-    ingress.append(new_rule)
+    rules.append(new_rule)
 
-cfg["ingress"] = ingress
+print(json.dumps(rules))
+" "$hostname" "$service") || return 1
 
-with open(config_path, "w") as f:
-    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-
-# Validate catch-all
-with open(config_path) as f:
-    check = yaml.safe_load(f)
-last = check["ingress"][-1]
-if "hostname" in last or last.get("service") != "http_status:404":
-    # Restore backup
-    shutil.copy2(config_path + ".bak", config_path)
-    print("ERROR: catch-all rule validation failed, restored backup", file=sys.stderr)
-    sys.exit(1)
-
-print("ok")
-PYEOF
+    _tunnel_put_ingress "$new_ingress" >/dev/null || return 1
+    echo "ok"
 }
 
 yaml_remove_ingress() {
     local hostname="$1"
-    python3 - "$CONFIG_FILE" "$hostname" <<'PYEOF'
-import sys, yaml, shutil
+    local ingress
+    ingress=$(_tunnel_get_ingress) || return 1
 
-config_path = sys.argv[1]
-hostname = sys.argv[2]
+    local new_ingress
+    new_ingress=$(printf '%s' "$ingress" | python3 -c "
+import json, sys
+hostname = sys.argv[1]
+rules = json.load(sys.stdin)
+new_rules = [r for r in rules if r.get('hostname') != hostname]
+if len(new_rules) == len(rules):
+    print(f\"WARNING: hostname '{hostname}' not found in ingress\", file=sys.stderr)
+print(json.dumps(new_rules))
+" "$hostname") || return 1
 
-# Backup
-shutil.copy2(config_path, config_path + ".bak")
-
-with open(config_path) as f:
-    cfg = yaml.safe_load(f)
-
-if not cfg:
-    print("ERROR: config.yml is empty or invalid", file=sys.stderr)
-    sys.exit(1)
-
-ingress = cfg.get("ingress", [])
-new_ingress = [r for r in ingress if r.get("hostname") != hostname]
-
-if len(new_ingress) == len(ingress):
-    print(f"WARNING: hostname '{hostname}' not found in ingress", file=sys.stderr)
-    sys.exit(0)
-
-cfg["ingress"] = new_ingress
-
-with open(config_path, "w") as f:
-    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-
-# Validate catch-all
-with open(config_path) as f:
-    check = yaml.safe_load(f)
-last = check["ingress"][-1]
-if "hostname" in last or last.get("service") != "http_status:404":
-    shutil.copy2(config_path + ".bak", config_path)
-    print("ERROR: catch-all rule validation failed, restored backup", file=sys.stderr)
-    sys.exit(1)
-
-print("ok")
-PYEOF
+    _tunnel_put_ingress "$new_ingress" >/dev/null || return 1
+    echo "ok"
 }
 
 yaml_validate() {
-    python3 - "$CONFIG_FILE" <<'PYEOF'
-import sys, yaml
-
-try:
-    with open(sys.argv[1]) as f:
-        cfg = yaml.safe_load(f)
-except Exception as e:
-    print(f"ERROR: invalid YAML: {e}", file=sys.stderr)
+    local ingress
+    ingress=$(_tunnel_get_ingress) || return 1
+    printf '%s' "$ingress" | python3 -c "
+import json, sys
+rules = json.load(sys.stdin)
+if not rules:
+    print('ERROR: no ingress rules found', file=sys.stderr)
     sys.exit(1)
-
-if not cfg:
-    print("ERROR: config.yml is empty or invalid", file=sys.stderr)
+last = rules[-1]
+if 'hostname' in last:
+    print('ERROR: last ingress rule must be catch-all (no hostname)', file=sys.stderr)
     sys.exit(1)
-
-ingress = cfg.get("ingress")
-if not ingress or not isinstance(ingress, list):
-    print("ERROR: no ingress rules found", file=sys.stderr)
+if last.get('service') != 'http_status:404':
+    print(f\"ERROR: catch-all service is '{last.get(\"service\")}', expected 'http_status:404'\", file=sys.stderr)
     sys.exit(1)
-
-last = ingress[-1]
-if "hostname" in last:
-    print("ERROR: last ingress rule must be catch-all (no hostname)", file=sys.stderr)
-    sys.exit(1)
-
-if last.get("service") != "http_status:404":
-    print(f"ERROR: catch-all service is '{last.get('service')}', expected 'http_status:404'", file=sys.stderr)
-    sys.exit(1)
-
-print(f"ok: {len(ingress)} rules, catch-all valid")
-PYEOF
+print(f'ok: {len(rules)} rules, catch-all valid')
+"
 }
 
 ###############################################################################
@@ -2057,8 +1913,7 @@ cmd_deploy() {
     # === Step: Restart cloudflared ===
     step "${step_cf}/${total_steps}" "Restarting cloudflared..."
     if ! cloudflared_restart; then
-        error "cloudflared failed to restart! Check config.yml."
-        warn "Backup available at ${CONFIG_FILE}.bak"
+        error "cloudflared failed to restart!"
         failed=1
     fi
 

@@ -3,6 +3,12 @@
 setup() {
     load '../test_helper/common'
     export TUNNEL_ID="test-tunnel-id"
+    export CF_ACCOUNT_ID="test-account-id"
+    export CF_API_TOKEN="test-token"
+
+    # Mock ingress state
+    _MOCK_INGRESS="$BATS_TEST_TMPDIR/ingress.json"
+    echo '[{"service":"http_status:404"}]' > "$_MOCK_INGRESS"
 }
 
 docker() {
@@ -38,33 +44,14 @@ EOF
     assert_output $'app.example.com\nalt.example.com\nwww.example.com'
 }
 
-@test "_generate_config_from_dokku rebuilds ingress for every Dokku hostname" {
-    export CONFIG_FILE="$BATS_TEST_TMPDIR/config.yml"
-
-    dokku_list_apps() {
-        printf 'demo\n'
+@test "sync_missing_ingress_from_dokku restores every missing Dokku hostname via API" {
+    _tunnel_get_ingress() {
+        cat "$_MOCK_INGRESS"
     }
-
-    dokku_app_domains_all() {
-        printf 'app.example.com\nalt.example.com\n'
+    _tunnel_put_ingress() {
+        printf '%s' "$1" > "$_MOCK_INGRESS"
+        echo '{"success":true}'
     }
-
-    run _generate_config_from_dokku
-    assert_success
-    assert_output --partial "ok: 2 app rule(s)"
-
-    run yaml_has_hostname "app.example.com"
-    assert_success
-    assert_output "yes"
-
-    run yaml_has_hostname "alt.example.com"
-    assert_success
-    assert_output "yes"
-}
-
-@test "sync_missing_ingress_from_dokku restores every missing Dokku hostname" {
-    cp "$FERRY_ROOT/test/fixtures/config-empty.yml" "$BATS_TEST_TMPDIR/config.yml"
-    export CONFIG_FILE="$BATS_TEST_TMPDIR/config.yml"
 
     dokku_list_apps() {
         printf 'demo\n'
@@ -78,6 +65,10 @@ EOF
     assert_success
     assert_output "2"
 
+    _tunnel_get_ingress() {
+        cat "$_MOCK_INGRESS"
+    }
+
     run yaml_has_hostname "app.example.com"
     assert_success
     assert_output "yes"
@@ -85,18 +76,4 @@ EOF
     run yaml_has_hostname "alt.example.com"
     assert_success
     assert_output "yes"
-}
-
-@test "preflight fails and does not generate blank config when Dokku app listing fails" {
-    export CONFIG_FILE="$BATS_TEST_TMPDIR/missing-config.yml"
-    rm -f "$CONFIG_FILE"
-
-    dokku_list_apps() {
-        return 1
-    }
-
-    run preflight
-    assert_failure
-    assert_output --partial "Failed to list Dokku apps while recovering missing config.yml"
-    assert_file_not_exist "$CONFIG_FILE"
 }

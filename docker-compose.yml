@@ -2,10 +2,9 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
-    command: tunnel --config /etc/cloudflared/tunnel/config.yml run
-    volumes:
-      - ./tunnels/providers/cloudflare:/etc/cloudflared/tunnel:ro
-      - ${HOME}/.cloudflared/${TUNNEL_ID}.json:/etc/cloudflared/credentials.json:ro
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
     dns:
       - 172.17.0.1
     networks:

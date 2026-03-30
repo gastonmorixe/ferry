@@ -1,18 +1,46 @@
 #!/usr/bin/env bats
 
-# Note: yaml_has_hostname always exits 0; it signals presence by printing
-# "yes" or "no" to stdout. Tests check output, not exit status.
+# Tests for tunnel ingress operations (API-based, mocked).
+# The yaml_* function names are retained for backward compatibility.
 
 setup() {
     load '../test_helper/common'
-    export FIXTURES_DIR="$FERRY_ROOT/test/fixtures"
+
+    # Mock API state — stored as a JSON file in tmpdir
+    _MOCK_INGRESS="$BATS_TEST_TMPDIR/ingress.json"
 }
 
-# Copy a named fixture into BATS_TEST_TMPDIR and point CONFIG_FILE at it.
+# Load a fixture ingress state
 _use_fixture() {
     local name="$1"
-    cp "$FIXTURES_DIR/${name}" "$BATS_TEST_TMPDIR/config.yml"
-    export CONFIG_FILE="$BATS_TEST_TMPDIR/config.yml"
+    case "$name" in
+        config-valid.yml)
+            cat > "$_MOCK_INGRESS" <<'EOF'
+[{"hostname":"app1.example.com","service":"http://dokku:80"},{"hostname":"app2.example.com","service":"http://dokku:80"},{"service":"http_status:404"}]
+EOF
+            ;;
+        config-empty.yml)
+            cat > "$_MOCK_INGRESS" <<'EOF'
+[{"service":"http_status:404"}]
+EOF
+            ;;
+        config-invalid.yml)
+            cat > "$_MOCK_INGRESS" <<'EOF'
+[{"hostname":"app1.example.com","service":"http://dokku:80"}]
+EOF
+            ;;
+    esac
+
+    # Override API functions to use local mock
+    _tunnel_get_ingress() {
+        cat "$_MOCK_INGRESS"
+    }
+
+    _tunnel_put_ingress() {
+        local ingress_json="$1"
+        printf '%s' "$ingress_json" > "$_MOCK_INGRESS"
+        echo '{"success":true}'
+    }
 }
 
 # ---------------------------------------------------------------------------
