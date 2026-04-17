@@ -2,6 +2,22 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.9.0] - 2026-04-17
+
+### Added
+- **`ferry tune <app>` command** — adjust per-app memory limits and Node.js V8 heap without redeploying. Flags: `-m/--memory N` (container memory MB), `--heap N` (override V8 `--max-old-space-size`), `--runtime node|python|go|ruby|rust` (enables heap auto-tune for Node). Interactive by default; non-interactive with `-y`. No image rebuild, no cleanup — Dokku storage mounts, persistent volumes, and database links are preserved across the `ps:restart`.
+- **`ferry deploy -m/--memory N` flag** — set the container memory limit at deploy time (default 256 MB, prompted interactively with a 512+ recommendation when a Node runtime is detected).
+- **Runtime persistence via Dokku config.** Deploy now sets `FERRY_RUNTIME`, `FERRY_MEMORY`, and (for Node apps) `NODE_OPTIONS=--max-old-space-size=<mem-48>` so V8 garbage-collects aggressively before hitting the cgroup wall instead of aborting with SIGABRT / being SIGKILLed by the kernel OOM-killer.
+- **`ferry_calc_node_heap()`** helper — computes V8 heap cap as `memory - 48` MB with a 64 MB floor.
+- **`ferry_detect_runtime_from_dir()`** helper — maps project files to runtime tag (`package.json`→node, `pyproject.toml`/`requirements.txt`/`Pipfile`→python, `go.mod`→go, `Cargo.toml`→rust, `Gemfile`→ruby).
+
+### Fixed
+- **Node apps no longer crash with `FATAL ERROR: Reached heap limit Allocation failed — JavaScript heap out of memory`** under the default 256 MB container limit. New deploys of Node apps automatically receive `NODE_OPTIONS=--max-old-space-size=208`, leaving ~48 MB for V8 internals, code, and native allocations. Existing apps can migrate with `ferry tune <app> -m 512 --runtime node -y`.
+
+### Changed
+- Interactive menu gains a **Tune** entry (between Rebuild and Logs).
+- `cmd_help` documents the tune command, tune flags, and the `-m/--memory` deploy flag with a new example line.
+
 ## [0.8.0] - 2026-03-29
 
 ### Changed

@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.8.0"
+FERRY_VERSION="0.9.0"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -1142,6 +1142,58 @@ dokku_app_status() {
 }
 
 ###############################################################################
+# Resource / Runtime Helpers (used by deploy + tune)
+###############################################################################
+
+# Calculate a safe V8 --max-old-space-size for a container memory limit.
+# Leaves ~48 MiB headroom for V8 internals, code, buffers; floors at 64 MiB.
+ferry_calc_node_heap() {
+    local mem="${1:-0}"
+    local heap=$((mem - 48))
+    ((heap < 64)) && heap=64
+    echo "$heap"
+}
+
+# Detect runtime from project files in an app source directory.
+# Echoes: node | python | go | rust | ruby | static | ""
+ferry_detect_runtime_from_dir() {
+    local dir="${1:-}"
+    [[ -d "$dir" ]] || { echo ""; return 0; }
+    if [[ -f "$dir/package.json" ]]; then echo "node"; return 0; fi
+    if [[ -f "$dir/pyproject.toml" || -f "$dir/requirements.txt" || -f "$dir/Pipfile" ]]; then echo "python"; return 0; fi
+    if [[ -f "$dir/go.mod" ]]; then echo "go"; return 0; fi
+    if [[ -f "$dir/Cargo.toml" ]]; then echo "rust"; return 0; fi
+    if [[ -f "$dir/Gemfile" ]]; then echo "ruby"; return 0; fi
+    echo ""
+}
+
+# Read the FERRY_RUNTIME Dokku config var for an app.
+# Returns 0 even when the key is unset (dokku config:get exits non-zero in that case).
+ferry_app_runtime() {
+    local name="$1"
+    local val=""
+    val=$(dokku_cmd config:get "$name" FERRY_RUNTIME 2>/dev/null || true)
+    printf '%s' "${val//[$'\r\n']/}"
+}
+
+# Parse current memory limit (MB) from `dokku resource:report`.
+ferry_app_memory_limit() {
+    local name="$1"
+    local out=""
+    out=$(dokku_cmd resource:report "$name" 2>/dev/null || true)
+    printf '%s' "$out" \
+        | awk '/_default_ limit memory:/ { gsub(/[^0-9]/, "", $NF); print $NF; exit }'
+}
+
+# Read current NODE_OPTIONS dokku config for an app.
+ferry_app_node_options() {
+    local name="$1"
+    local val=""
+    val=$(dokku_cmd config:get "$name" NODE_OPTIONS 2>/dev/null || true)
+    printf '%s' "${val//[$'\r\n']/}"
+}
+
+###############################################################################
 # Git & Deploy Helpers
 ###############################################################################
 
@@ -1402,10 +1454,6 @@ cmd_status() {
                 *)              status_icon="${C_ERROR}○${C_RESET}" ;;
             esac
 
-            # Print row with "checking..." placeholder
-            printf "    %-14s %-30s %-14s " "$app" "$domain" "$ports"
-            echo -en "${status_icon} ${status}     ${dns_icon}  ${C_DIM}checking...${C_RESET}"
-
             # Live end-to-end HTTP check through the public domain
             local live_result live_color
             if [[ -n "$domain" && "$status" == "running" ]]; then
@@ -1430,8 +1478,6 @@ cmd_status() {
                 live_color="$C_DIM"
             fi
 
-            # Overwrite "checking..." with actual result
-            printf "\r\033[K"
             printf "    %-14s %-30s %-14s " "$app" "$domain" "$ports"
             echo -e "${status_icon} ${status}     ${dns_icon}  ${live_color}${live_result}${C_RESET}"
         done <<< "$apps"
@@ -1539,12 +1585,14 @@ cmd_deploy() {
 
     local name="" hostname="" port="" repo="" branch="" app_dir="" no_push=false
     local has_app_source=false port_explicit=false
+    local memory="" memory_explicit=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -H|--hostname) hostname="$2"; shift 2 ;;
             -p|--port)     port="$2"; port_explicit=true; shift 2 ;;
+            -m|--memory)   memory="$2"; memory_explicit=true; shift 2 ;;
             -r|--repo)     repo="$2"; shift 2 ;;
             -b|--branch)   branch="$2"; shift 2 ;;
             -d|--dir)      app_dir="$2"; shift 2 ;;
@@ -1704,6 +1752,29 @@ cmd_deploy() {
         fi
     fi
 
+    # --- Runtime detection (from app_dir if present) ---
+    local runtime=""
+    if $has_app_source && [[ -d "$app_dir" ]]; then
+        runtime=$(ferry_detect_runtime_from_dir "$app_dir")
+    fi
+
+    # --- Memory resolution ---
+    if ! $memory_explicit; then
+        if $YES; then
+            memory=256
+        else
+            local mem_hint=""
+            [[ "$runtime" == "node" ]] && mem_hint=" (512+ recommended for Node)"
+            prompt "Memory limit in MB${mem_hint}" "256"
+            read -r memory
+            memory="${memory:-256}"
+        fi
+    fi
+    if ! [[ "$memory" =~ ^[0-9]+$ ]] || ((memory < 64)); then
+        error "Invalid memory '$memory' — must be integer ≥ 64."
+        return 1
+    fi
+
     # Root domain check
     local is_root=false
     local dot_count
@@ -1745,6 +1816,10 @@ cmd_deploy() {
     else
         kv "Port" "$port"
         kv "Port map" "http:80:$port"
+    fi
+    kv "Memory" "${memory} MB"
+    if [[ -n "$runtime" ]]; then
+        kv "Runtime" "$runtime"
     fi
     if [[ -n "$repo" ]]; then
         kv "Repo" "$repo"
@@ -1825,6 +1900,12 @@ cmd_deploy() {
         fi
     fi
 
+    # Re-detect runtime after clone (may have been empty if clone deferred)
+    if [[ -z "$runtime" ]] && $has_app_source && [[ -d "$app_dir" ]]; then
+        runtime=$(ferry_detect_runtime_from_dir "$app_dir")
+        [[ -n "$runtime" ]] && info "Detected runtime: $runtime"
+    fi
+
     # Warn if no Dockerfile or package.json (buildpack detection may fail)
     if $has_app_source && [[ -d "$app_dir" ]]; then
         if [[ ! -f "$app_dir/Dockerfile" ]] && [[ ! -f "$app_dir/package.json" ]]; then
@@ -1865,11 +1946,30 @@ cmd_deploy() {
     fi
 
     local resource_output resource_exit=0
-    resource_output=$(dokku_cmd resource:limit "$name" --memory 256 2>&1) || resource_exit=$?
+    resource_output=$(dokku_cmd resource:limit "$name" --memory "$memory" 2>&1) || resource_exit=$?
     if [[ $resource_exit -eq 0 ]]; then
-        success "Resource limits set (memory: 256 MB)"
+        success "Resource limits set (memory: ${memory} MB)"
     else
         warn "Failed to set resource limits: $resource_output"
+    fi
+
+    # Persist Ferry-managed config so `ferry tune` and future deploys can read them.
+    # If this is a Node app, seed NODE_OPTIONS with a sensible heap cap below the cgroup
+    # so V8 GCs aggressively before hitting the container limit (avoiding SIGABRT/SIGKILL).
+    local -a ferry_config=("FERRY_MEMORY=$memory")
+    [[ -n "$runtime" ]] && ferry_config+=("FERRY_RUNTIME=$runtime")
+    if [[ "$runtime" == "node" ]]; then
+        local heap
+        heap=$(ferry_calc_node_heap "$memory")
+        ferry_config+=("NODE_OPTIONS=--max-old-space-size=${heap}")
+    fi
+
+    local fcfg_out fcfg_exit=0
+    fcfg_out=$(dokku_cmd config:set --no-restart "$name" "${ferry_config[@]}" 2>&1) || fcfg_exit=$?
+    if [[ $fcfg_exit -eq 0 ]]; then
+        success "Ferry config set (${#ferry_config[@]} vars)"
+    else
+        warn "Failed to set ferry config: $fcfg_out"
     fi
 
     # Ensure the app starts on the webserver network so nginx gets the
@@ -2200,6 +2300,186 @@ cmd_rebuild() {
     dokku_cmd ps:rebuild "$name"
     echo ""
     success "Rebuild complete."
+}
+
+###############################################################################
+# Command: tune — Adjust per-app resource limits (memory + Node heap)
+###############################################################################
+
+cmd_tune() {
+    preflight
+
+    local name="" memory="" heap="" runtime_flag=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -m|--memory)  memory="$2"; shift 2 ;;
+            --heap)       heap="$2"; shift 2 ;;
+            --runtime)    runtime_flag="$2"; shift 2 ;;
+            -y|--yes)     YES=true; shift ;;
+            -*)           error "Unknown flag: $1"; return 1 ;;
+            *)            name="$1"; shift ;;
+        esac
+    done
+
+    # --- Validate app ---
+    if [[ -z "$name" ]]; then
+        if $YES; then
+            error "App name required when using -y/--yes."
+            return 1
+        fi
+        if ! tui_select_app "Tune App" || [[ -z "$_TUI_APP_SELECTED" ]]; then
+            return 0
+        fi
+        name="$_TUI_APP_SELECTED"
+    fi
+
+    if ! dokku_app_exists "$name"; then
+        error "App '$name' does not exist in Dokku."
+        return 1
+    fi
+
+    section_header "Tune: $name"
+    echo ""
+
+    # --- Read current state ---
+    local cur_mem cur_runtime cur_node_opts
+    cur_mem=$(ferry_app_memory_limit "$name")
+    cur_runtime=$(ferry_app_runtime "$name")
+    cur_node_opts=$(ferry_app_node_options "$name")
+
+    # Fallback runtime detection from app source dir
+    local detected_runtime=""
+    if [[ -z "$cur_runtime" && -d "$FERRY_APPS_DIR/$name" ]]; then
+        detected_runtime=$(ferry_detect_runtime_from_dir "$FERRY_APPS_DIR/$name")
+    fi
+
+    kv "Current memory" "${cur_mem:-unset} MB"
+    kv "Current NODE_OPTIONS" "${cur_node_opts:-(not set)}"
+    if [[ -n "$cur_runtime" ]]; then
+        kv "Runtime (config)" "$cur_runtime"
+    elif [[ -n "$detected_runtime" ]]; then
+        kv "Runtime (detected)" "$detected_runtime"
+    else
+        kv "Runtime" "(unknown)"
+    fi
+    echo ""
+
+    # --- Resolve runtime ---
+    local runtime="${runtime_flag:-${cur_runtime:-$detected_runtime}}"
+    if [[ -z "$runtime" ]]; then
+        if $YES; then
+            warn "Runtime unknown — skipping heap auto-tune. Pass --runtime node to enable."
+        else
+            prompt "Runtime (node/python/go/ruby/rust/static, blank to skip heap tune)" ""
+            read -r runtime
+        fi
+    fi
+
+    # --- Resolve memory ---
+    if [[ -z "$memory" ]]; then
+        local default_mem="${cur_mem:-256}"
+        if $YES; then
+            memory="$default_mem"
+        else
+            local hint=""
+            [[ "$runtime" == "node" ]] && hint=" (512+ recommended for Node)"
+            prompt "New memory limit in MB${hint}" "$default_mem"
+            read -r memory
+            memory="${memory:-$default_mem}"
+        fi
+    fi
+
+    if ! [[ "$memory" =~ ^[0-9]+$ ]] || ((memory < 64)); then
+        error "Invalid memory '$memory' — must be integer ≥ 64."
+        return 1
+    fi
+
+    # --- Resolve heap (Node only) ---
+    local computed_heap=""
+    if [[ "$runtime" == "node" ]]; then
+        if [[ -n "$heap" ]]; then
+            if ! [[ "$heap" =~ ^[0-9]+$ ]] || ((heap < 64)) || ((heap >= memory)); then
+                error "Invalid heap '$heap' — must be integer, ≥ 64, and < memory ($memory)."
+                return 1
+            fi
+            computed_heap="$heap"
+        else
+            computed_heap=$(ferry_calc_node_heap "$memory")
+        fi
+    fi
+
+    # --- Plan ---
+    section_header "Plan"
+    echo ""
+    kv "Memory" "${cur_mem:-unset} → ${memory} MB"
+    if [[ -n "$computed_heap" ]]; then
+        kv "NODE_OPTIONS" "--max-old-space-size=${computed_heap}"
+    fi
+    if [[ -n "$runtime" ]]; then
+        kv "FERRY_RUNTIME" "$runtime"
+    fi
+    kv "FERRY_MEMORY" "$memory"
+    dim "  App will restart. Container is regenerated from the existing image —"
+    dim "  Dokku storage mounts, persistent volumes, and database links are preserved."
+    echo ""
+
+    if ! $YES && ! confirm "Apply these changes?"; then
+        info "Cancelled."
+        return 0
+    fi
+
+    echo ""
+
+    # --- Apply resource limit ---
+    local rl_out rl_exit=0
+    rl_out=$(dokku_cmd resource:limit "$name" --memory "$memory" 2>&1) || rl_exit=$?
+    if ((rl_exit == 0)); then
+        success "resource:limit set (memory: ${memory} MB)"
+    else
+        error "resource:limit failed (exit $rl_exit): $rl_out"
+        return 1
+    fi
+
+    # --- Apply config (single call = one restart) ---
+    local -a config_pairs=()
+    config_pairs+=("FERRY_MEMORY=$memory")
+    [[ -n "$runtime" ]] && config_pairs+=("FERRY_RUNTIME=$runtime")
+    if [[ -n "$computed_heap" ]]; then
+        config_pairs+=("NODE_OPTIONS=--max-old-space-size=${computed_heap}")
+    fi
+
+    local cfg_out cfg_exit=0
+    cfg_out=$(dokku_cmd config:set --no-restart "$name" "${config_pairs[@]}" 2>&1) || cfg_exit=$?
+    if ((cfg_exit == 0)); then
+        success "config updated (${#config_pairs[@]} vars)"
+    else
+        error "config:set failed (exit $cfg_exit): $cfg_out"
+        return 1
+    fi
+
+    # --- Restart (explicit to apply new limit) ---
+    info "Restarting app..."
+    local rs_out rs_exit=0
+    rs_out=$(dokku_cmd ps:restart "$name" 2>&1) || rs_exit=$?
+    if ((rs_exit == 0)); then
+        success "ps:restart complete"
+    else
+        warn "ps:restart exited $rs_exit: $rs_out"
+        warn "If the app never deployed, try: ferry rebuild $name"
+    fi
+
+    # --- Verify ---
+    echo ""
+    local status
+    status=$(dokku_app_status "$name")
+    if [[ "$status" == "running" ]]; then
+        box "${C_SUCCESS}✓ Tune complete — app is running${C_RESET}"
+    else
+        box "${C_WARN}! Tune applied — app status: ${status}${C_RESET}"
+        dim "  Check logs: ferry logs $name"
+    fi
+    echo ""
 }
 
 ###############################################################################
@@ -2567,6 +2847,7 @@ cmd_help() {
     echo -e "    ${C_WHITE}ferry list${C_RESET}                             ${C_DIM}Quick app list${C_RESET}"
     echo -e "    ${C_WHITE}ferry reload${C_RESET}                           ${C_DIM}Validate + restart cloudflared${C_RESET}"
     echo -e "    ${C_WHITE}ferry rebuild${C_RESET} <name>                   ${C_DIM}Rebuild a Dokku app${C_RESET}"
+    echo -e "    ${C_WHITE}ferry tune${C_RESET} <name> [opts]               ${C_DIM}Adjust memory limits + Node heap${C_RESET}"
     echo -e "    ${C_WHITE}ferry logs${C_RESET} <name>                      ${C_DIM}Tail app logs${C_RESET}"
     echo -e "    ${C_WHITE}ferry help${C_RESET}                             ${C_DIM}Show this help${C_RESET}"
 
@@ -2584,11 +2865,18 @@ cmd_help() {
     kv "-r, --repo" "GitHub repo to clone (owner/repo or URL)"
     kv "-H, --hostname" "App hostname (default: <name>.\${DOKKU_HOSTNAME})"
     kv "-p, --port" "App port (default: auto-detect, fallback: 5000)"
+    kv "-m, --memory" "Container memory limit in MB (default: 256)"
     kv "-b, --branch" "Git branch to push (default: auto-detect)"
     kv "-d, --dir" "Local app directory (skip clone)"
     kv "--no-push" "Infrastructure only, skip git push"
     kv "-y, --yes" "Skip all confirmations"
     kv "-t, --token" "API token for login (skip prompt)"
+
+    section_header "Tune Flags"
+    echo ""
+    kv "-m, --memory" "New container memory limit in MB (min 64)"
+    kv "--heap" "Override Node --max-old-space-size (default: memory - 48)"
+    kv "--runtime" "node|python|go|ruby|rust — enables heap tune for node"
 
     section_header "Examples"
     echo ""
@@ -2597,8 +2885,9 @@ cmd_help() {
     echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry new --list${C_RESET}"
     echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp${C_RESET}"
     echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp -r owner/repo -H app.example.com -y${C_RESET}"
-    echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp -d ./my-app -y${C_RESET}"
+    echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp -d ./my-app -m 512 -y${C_RESET}"
     echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp -r owner/repo --no-push -y${C_RESET}"
+    echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry tune myapp -m 512 --runtime node -y${C_RESET}"
     echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry remove myapp -y${C_RESET}"
 
     section_header "Environment"
@@ -2929,6 +3218,7 @@ interactive_menu() {
             "Remove       Remove an app" \
             "Reload       Validate + restart cloudflared" \
             "Rebuild      Rebuild a Dokku app" \
+            "Tune         Adjust memory limits + Node heap" \
             "Logs         Tail app logs" \
             "Help         Usage information" \
             "Login        Cloudflare API setup" \
@@ -2945,13 +3235,14 @@ interactive_menu() {
                 tui_select_app "Rebuild App" && [[ -n "$_TUI_APP_SELECTED" ]] \
                     && cmd_rebuild "$_TUI_APP_SELECTED" || warn "Rebuild failed."
                 ;;
-            7)
+            7) cmd_tune || warn "Tune failed — you can try again." ;;
+            8)
                 tui_select_app "Tail Logs" && [[ -n "$_TUI_APP_SELECTED" ]] \
                     && cmd_logs "$_TUI_APP_SELECTED" || warn "Logs failed."
                 ;;
-            8) cmd_help ;;
-            9) cmd_login || warn "Login failed — you can try again." ;;
-            10|255) echo ""; dim "Bye!"; exit 0 ;;
+            9) cmd_help ;;
+            10) cmd_login || warn "Login failed — you can try again." ;;
+            11|255) echo ""; dim "Bye!"; exit 0 ;;
         esac
     done
 }
@@ -3015,6 +3306,7 @@ main() {
         list)    cmd_list ;;
         reload)  cmd_reload ;;
         rebuild) cmd_rebuild "${args[@]+"${args[@]}"}" ;;
+        tune)    cmd_tune "${args[@]+"${args[@]}"}" ;;
         logs)    cmd_logs "${args[@]+"${args[@]}"}" ;;
         help|-h|--help) cmd_help ;;
         "")      interactive_menu ;;

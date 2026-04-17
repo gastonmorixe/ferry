@@ -3,7 +3,7 @@
 
 setup() {
     load '../test_helper/common'
-    FERRY="$FERRY_ROOT/ferry"
+    FERRY="$FERRY_ROOT/ferry.sh"
 }
 
 # ── Exit codes ────────────────────────────────────────────────────────────────
@@ -67,4 +67,22 @@ setup() {
     run "$FERRY" help
     assert_success
     assert_output --partial "list"
+}
+
+@test "ferry help output contains 'tune'" {
+    run "$FERRY" help
+    assert_success
+    assert_output --partial "tune"
+}
+
+@test "ferry help output contains '--memory' flag" {
+    run "$FERRY" help
+    assert_success
+    assert_output --partial "--memory"
+}
+
+@test "ferry help output contains '--runtime' flag" {
+    run "$FERRY" help
+    assert_success
+    assert_output --partial "--runtime"
 }
