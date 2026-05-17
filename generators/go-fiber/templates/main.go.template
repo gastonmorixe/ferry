@@ -1,13 +1,23 @@
 package main
 
 import (
+	"context"
+	"encoding/csv"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"html"
+	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
+	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -16,68 +26,849 @@ import (
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const appName = "{{APP_NAME}}"
-
 const defaultPort = "{{APP_PORT}}"
 
-// ── Data types ────────────────────────────────────────────────────────────────
+var startTime = time.Now()
 
-type Header struct {
-	Key   string
-	Value string
+// ── Cloudflare Datacenter Map ─────────────────────────────────────────────────
+
+var cfDC = map[string]string{
+	"ATL": "Atlanta", "IAD": "Ashburn", "BOS": "Boston", "ORD": "Chicago",
+	"DFW": "Dallas", "DEN": "Denver", "IAH": "Houston", "MCI": "Kansas City",
+	"LAX": "Los Angeles", "MIA": "Miami", "MSP": "Minneapolis", "BNA": "Nashville",
+	"EWR": "Newark", "JFK": "New York", "PHL": "Philadelphia", "PHX": "Phoenix",
+	"PDX": "Portland", "SJC": "San Jose", "SEA": "Seattle", "SLC": "Salt Lake City",
+	"TPA": "Tampa",
+	"YYZ": "Toronto", "YUL": "Montreal", "YVR": "Vancouver",
+	"GRU": "São Paulo", "GIG": "Rio de Janeiro", "EZE": "Buenos Aires",
+	"SCL": "Santiago", "BOG": "Bogotá", "LIM": "Lima", "MEX": "Mexico City",
+	"PTY": "Panama City", "UIO": "Quito", "MVD": "Montevideo", "CUR": "Curaçao",
+	"GUA": "Guatemala City", "SJO": "San José", "MDE": "Medellín",
+	"AMS": "Amsterdam", "ATH": "Athens", "BCN": "Barcelona", "TXL": "Berlin",
+	"BRU": "Brussels", "OTP": "Bucharest", "BUD": "Budapest", "KIV": "Chișinău",
+	"CPH": "Copenhagen", "DUB": "Dublin", "DUS": "Düsseldorf", "EDI": "Edinburgh",
+	"FRA": "Frankfurt", "HAM": "Hamburg", "HEL": "Helsinki", "IST": "Istanbul",
+	"LIS": "Lisbon", "LHR": "London", "MAD": "Madrid", "MRS": "Marseille",
+	"MXP": "Milan", "MUC": "Munich", "OSL": "Oslo", "CDG": "Paris",
+	"PRG": "Prague", "FCO": "Rome", "LED": "St Petersburg", "SOF": "Sofia",
+	"ARN": "Stockholm", "VIE": "Vienna", "WAW": "Warsaw", "ZAG": "Zagreb",
+	"ZRH": "Zurich",
+	"BLR": "Bangalore", "BKK": "Bangkok", "PEK": "Beijing", "MAA": "Chennai",
+	"CKG": "Chongqing", "HKG": "Hong Kong", "HYD": "Hyderabad", "CGK": "Jakarta",
+	"KUL": "Kuala Lumpur", "BOM": "Mumbai", "CCU": "Kolkata", "DEL": "New Delhi",
+	"KIX": "Osaka", "ICN": "Seoul", "PVG": "Shanghai", "SIN": "Singapore",
+	"TPE": "Taipei", "NRT": "Tokyo", "SGN": "Ho Chi Minh City",
+	"AKL": "Auckland", "SYD": "Sydney", "MEL": "Melbourne", "PER": "Perth",
+	"BNE": "Brisbane",
+	"CPT": "Cape Town", "JNB": "Johannesburg", "LOS": "Lagos", "NBO": "Nairobi",
+	"MBA": "Mombasa",
+	"AMM": "Amman", "BAH": "Bahrain", "DOH": "Doha", "DXB": "Dubai",
+	"KWI": "Kuwait City", "RUH": "Riyadh", "TLV": "Tel Aviv", "MCT": "Muscat",
 }
 
-type JSONResponse struct {
-	App       string          `json:"app"`
-	Ferry     string          `json:"ferry"`
-	Timestamp string          `json:"timestamp"`
-	Server    ServerInfo      `json:"server"`
-	Request   RequestInfoJSON `json:"request"`
+var continentNames = map[string]string{
+	"AF": "Africa",
+	"AN": "Antarctica",
+	"AS": "Asia",
+	"EU": "Europe",
+	"NA": "North America",
+	"OC": "Oceania",
+	"SA": "South America",
+}
+
+// ── Data Types ────────────────────────────────────────────────────────────────
+
+type GeoData struct {
+	Status        string  `json:"status"`
+	Message       string  `json:"message"`
+	Continent     string  `json:"continent"`
+	ContinentCode string  `json:"continentCode"`
+	Country       string  `json:"country"`
+	CountryCode   string  `json:"countryCode"`
+	Region        string  `json:"region"`
+	RegionName    string  `json:"regionName"`
+	City          string  `json:"city"`
+	District      string  `json:"district"`
+	Zip           string  `json:"zip"`
+	Lat           float64 `json:"lat"`
+	Lon           float64 `json:"lon"`
+	Timezone      string  `json:"timezone"`
+	Offset        int     `json:"offset"`
+	Currency      string  `json:"currency"`
+	ISP           string  `json:"isp"`
+	Org           string  `json:"org"`
+	AS            string  `json:"as"`
+	ASName        string  `json:"asname"`
+	Reverse       string  `json:"reverse"`
+	Mobile        bool    `json:"mobile"`
+	Proxy         bool    `json:"proxy"`
+	Hosting       bool    `json:"hosting"`
+	Query         string  `json:"query"`
+}
+
+type UaInfo struct {
+	Raw            string `json:"raw"`
+	Browser        string `json:"browser"`
+	BrowserVersion string `json:"browserVersion"`
+	OS             string `json:"os"`
+	OSVersion      string `json:"osVersion"`
+	Device         string `json:"device"`
+	Engine         string `json:"engine"`
+}
+
+type GeoInfo struct {
+	Continent     string  `json:"continent" xml:"continent"`
+	ContinentCode string  `json:"continentCode" xml:"continentCode"`
+	Country       string  `json:"country" xml:"country"`
+	CountryCode   string  `json:"countryCode" xml:"countryCode"`
+	Flag          string  `json:"flag" xml:"flag"`
+	Region        string  `json:"region" xml:"region"`
+	RegionName    string  `json:"regionName" xml:"regionName"`
+	City          string  `json:"city" xml:"city"`
+	District      string  `json:"district" xml:"district"`
+	Zip           string  `json:"zip" xml:"zip"`
+	Lat           float64 `json:"lat" xml:"lat"`
+	Lon           float64 `json:"lon" xml:"lon"`
+	Timezone      string  `json:"timezone" xml:"timezone"`
+	UTCOffset     int     `json:"utcOffset" xml:"utcOffset"`
+	Currency      string  `json:"currency" xml:"currency"`
+}
+
+type NetworkInfo struct {
+	ISP    string `json:"isp" xml:"isp"`
+	Org    string `json:"org" xml:"org"`
+	ASN    string `json:"asn" xml:"asn"`
+	ASName string `json:"asName" xml:"asName"`
+}
+
+type PrivacyInfo struct {
+	Proxy   bool `json:"proxy" xml:"proxy"`
+	Hosting bool `json:"hosting" xml:"hosting"`
+	Mobile  bool `json:"mobile" xml:"mobile"`
+}
+
+type ClientInfo struct {
+	IP        string       `json:"ip" xml:"ip"`
+	IPVersion string       `json:"ipVersion" xml:"ipVersion"`
+	Hostname  string       `json:"hostname,omitempty" xml:"hostname,omitempty"`
+	Geo       *GeoInfo     `json:"geo" xml:"geo,omitempty"`
+	Network   *NetworkInfo `json:"network" xml:"network,omitempty"`
+	Privacy   *PrivacyInfo `json:"privacy" xml:"privacy,omitempty"`
+	UserAgent UaInfo       `json:"userAgent" xml:"userAgent"`
+	Languages []string     `json:"languages" xml:"languages>lang"`
+	Encoding  []string     `json:"encoding" xml:"encoding>enc"`
+	DNT       bool         `json:"dnt" xml:"dnt"`
+	GPC       bool         `json:"gpc" xml:"gpc"`
+}
+
+type CloudflareInfo struct {
+	Detected       bool   `json:"detected" xml:"detected"`
+	Ray            string `json:"ray,omitempty" xml:"ray,omitempty"`
+	Datacenter     string `json:"datacenter,omitempty" xml:"datacenter,omitempty"`
+	DatacenterCity string `json:"datacenterCity,omitempty" xml:"datacenterCity,omitempty"`
+	Country        string `json:"country,omitempty" xml:"country,omitempty"`
+	Scheme         string `json:"scheme,omitempty" xml:"scheme,omitempty"`
+	WARP           bool   `json:"warp" xml:"warp"`
+}
+
+type RequestInfo struct {
+	Method   string `json:"method" xml:"method"`
+	URL      string `json:"url" xml:"url"`
+	Protocol string `json:"protocol" xml:"protocol"`
+	Host     string `json:"host" xml:"host"`
 }
 
 type ServerInfo struct {
-	Hostname string `json:"hostname"`
-	Port     string `json:"port"`
+	Hostname    string `json:"hostname" xml:"hostname"`
+	Port        string `json:"port" xml:"port"`
+	Uptime      int64  `json:"uptime" xml:"uptime"`
+	UptimeHuman string `json:"uptimeHuman" xml:"uptimeHuman"`
+	Runtime     string `json:"runtime" xml:"runtime"`
+	Platform    string `json:"platform" xml:"platform"`
+	Arch        string `json:"arch" xml:"arch"`
 }
 
-type RequestInfoJSON struct {
-	Method   string            `json:"method"`
-	URL      string            `json:"url"`
-	Protocol string            `json:"protocol"`
-	IP       string            `json:"ip"`
-	Host     string            `json:"host"`
-	Headers  map[string]string `json:"headers"`
+type HeaderEntry struct {
+	Key   string `json:"-" xml:"name,attr"`
+	Value string `json:"-" xml:",chardata"`
 }
 
-type XMLResponse struct {
-	XMLName   xml.Name       `xml:"response"`
-	App       string         `xml:"app"`
-	Ferry     string         `xml:"ferry"`
-	Timestamp string         `xml:"timestamp"`
-	Server    XMLServerInfo  `xml:"server"`
-	Request   XMLRequestInfo `xml:"request"`
+type Payload struct {
+	XMLName    xml.Name          `json:"-" xml:"response"`
+	App        string            `json:"app" xml:"app"`
+	Ferry      string            `json:"ferry" xml:"ferry"`
+	Timestamp  string            `json:"timestamp" xml:"timestamp"`
+	Client     ClientInfo        `json:"client" xml:"client"`
+	Cloudflare *CloudflareInfo   `json:"cloudflare" xml:"cloudflare,omitempty"`
+	Request    RequestInfo       `json:"request" xml:"request"`
+	Server     ServerInfo        `json:"server" xml:"server"`
+	Headers    map[string]string `json:"headers" xml:"-"`
+	XMLHeaders []HeaderEntry     `json:"-" xml:"headers>header"`
 }
 
-type XMLServerInfo struct {
-	Hostname string `xml:"hostname"`
-	Port     string `xml:"port"`
+// ── Geo Cache ─────────────────────────────────────────────────────────────────
+
+type cacheEntry struct {
+	data *GeoData
+	exp  time.Time
 }
 
-type XMLRequestInfo struct {
-	Method   string     `xml:"method"`
-	URL      string     `xml:"url"`
-	Protocol string     `xml:"protocol"`
-	IP       string     `xml:"ip"`
-	Host     string     `xml:"host"`
-	Headers  XMLHeaders `xml:"headers"`
+var (
+	geoCache           sync.Map
+	geoTTL             = 5 * time.Minute
+	geoFailTTL         = 1 * time.Minute
+	datasetRefreshMu   sync.Mutex
+	countryMetaCache   map[string]CountryMeta
+	countryRangesCache []CountryRange
+	asnRangesCache     []AsnRange
+	datasetsReady      bool
+)
+
+type CountryMeta struct {
+	Continent string `json:"continent"`
+	Name      string `json:"name"`
+	Currency  string `json:"currency"`
 }
 
-type XMLHeaders struct {
-	Items []XMLHeader `xml:"header"`
+type CountryRange struct {
+	Start       uint32
+	End         uint32
+	CountryCode string
 }
 
-type XMLHeader struct {
-	Key   string `xml:"key,attr"`
-	Value string `xml:",chardata"`
+type AsnRange struct {
+	Start uint32
+	End   uint32
+	ASN   string
+	Org   string
+}
+
+const (
+	IPDB_COUNTRY_URL    = "https://raw.githubusercontent.com/sapics/ip-location-db/main/geo-whois-asn-country/geo-whois-asn-country-ipv4-num.csv"
+	IPDB_ASN_URL        = "https://raw.githubusercontent.com/sapics/ip-location-db/main/iptoasn-asn/iptoasn-asn-ipv4-num.csv"
+	IPDB_COMMIT_URL     = "https://api.github.com/repos/sapics/ip-location-db/commits/main"
+	IPDB_REFRESH_MS     = 6 * 60 * 60 * 1000
+	IPDB_TIMEOUT_MS     = 5000
+	COUNTRY_DB_PATH     = "data/geo-whois-asn-country-ipv4-num.csv"
+	ASN_DB_PATH         = "data/iptoasn-asn-ipv4-num.csv"
+	COUNTRY_META_PATH   = "country-meta.min.json"
+	DATASET_SOURCE_PATH = "data/ipdb-source.json"
+)
+
+func isPrivateIP(ip string) bool {
+	if ip == "" || ip == "unknown" || ip == "::1" || ip == "127.0.0.1" {
+		return true
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	privateRanges := []string{
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+		"fc00::/7", "fe80::/10",
+	}
+	for _, cidr := range privateRanges {
+		_, network, _ := net.ParseCIDR(cidr)
+		if network.Contains(parsed) {
+			return true
+		}
+	}
+	return false
+}
+
+func ipv4ToNumber(ip string) (uint32, bool) {
+	normalized := strings.TrimPrefix(ip, "::ffff:")
+	parts := strings.Split(normalized, ".")
+	if len(parts) != 4 {
+		return 0, false
+	}
+	var out uint32
+	for _, part := range parts {
+		n, err := strconv.ParseUint(part, 10, 8)
+		if err != nil {
+			return 0, false
+		}
+		out = (out << 8) | uint32(n)
+	}
+	return out, true
+}
+
+func loadCountryMeta() map[string]CountryMeta {
+	if countryMetaCache != nil {
+		return countryMetaCache
+	}
+	data, err := os.ReadFile(COUNTRY_META_PATH)
+	if err != nil {
+		countryMetaCache = map[string]CountryMeta{}
+		return countryMetaCache
+	}
+	if err := json.Unmarshal(data, &countryMetaCache); err != nil || countryMetaCache == nil {
+		countryMetaCache = map[string]CountryMeta{}
+	}
+	return countryMetaCache
+}
+
+func loadCountryRanges() []CountryRange {
+	if countryRangesCache != nil {
+		return countryRangesCache
+	}
+	data, err := os.ReadFile(COUNTRY_DB_PATH)
+	if err != nil {
+		countryRangesCache = []CountryRange{}
+		return countryRangesCache
+	}
+	reader := csv.NewReader(strings.NewReader(string(data)))
+	rows, err := reader.ReadAll()
+	if err != nil {
+		countryRangesCache = []CountryRange{}
+		return countryRangesCache
+	}
+	countryRangesCache = make([]CountryRange, 0, len(rows))
+	for _, row := range rows {
+		if len(row) < 3 {
+			continue
+		}
+		start, err1 := strconv.ParseUint(strings.TrimSpace(row[0]), 10, 32)
+		end, err2 := strconv.ParseUint(strings.TrimSpace(row[1]), 10, 32)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		countryRangesCache = append(countryRangesCache, CountryRange{
+			Start:       uint32(start),
+			End:         uint32(end),
+			CountryCode: strings.TrimSpace(row[2]),
+		})
+	}
+	return countryRangesCache
+}
+
+func loadAsnRanges() []AsnRange {
+	if asnRangesCache != nil {
+		return asnRangesCache
+	}
+	data, err := os.ReadFile(ASN_DB_PATH)
+	if err != nil {
+		asnRangesCache = []AsnRange{}
+		return asnRangesCache
+	}
+	reader := csv.NewReader(strings.NewReader(string(data)))
+	rows, err := reader.ReadAll()
+	if err != nil {
+		asnRangesCache = []AsnRange{}
+		return asnRangesCache
+	}
+	asnRangesCache = make([]AsnRange, 0, len(rows))
+	for _, row := range rows {
+		if len(row) < 4 {
+			continue
+		}
+		start, err1 := strconv.ParseUint(strings.TrimSpace(row[0]), 10, 32)
+		end, err2 := strconv.ParseUint(strings.TrimSpace(row[1]), 10, 32)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		asnRangesCache = append(asnRangesCache, AsnRange{
+			Start: uint32(start),
+			End:   uint32(end),
+			ASN:   strings.TrimSpace(row[2]),
+			Org:   strings.TrimSpace(row[3]),
+		})
+	}
+	return asnRangesCache
+}
+
+func searchCountryRange(ranges []CountryRange, value uint32) *CountryRange {
+	low := 0
+	high := len(ranges) - 1
+	for low <= high {
+		mid := (low + high) / 2
+		row := ranges[mid]
+		if value < row.Start {
+			high = mid - 1
+		} else if value > row.End {
+			low = mid + 1
+		} else {
+			return &row
+		}
+	}
+	return nil
+}
+
+func searchAsnRange(ranges []AsnRange, value uint32) *AsnRange {
+	low := 0
+	high := len(ranges) - 1
+	for low <= high {
+		mid := (low + high) / 2
+		row := ranges[mid]
+		if value < row.Start {
+			high = mid - 1
+		} else if value > row.End {
+			low = mid + 1
+		} else {
+			return &row
+		}
+	}
+	return nil
+}
+
+func fetchText(url string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), IPDB_TIMEOUT_MS*time.Millisecond)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", appName+"/ferry-ipdb-updater")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+func fetchLatestCommitSha() (string, error) {
+	body, err := fetchText(IPDB_COMMIT_URL)
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		Sha string `json:"sha"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		return "", err
+	}
+	return parsed.Sha, nil
+}
+
+func currentDatasetSha() string {
+	body, err := os.ReadFile(DATASET_SOURCE_PATH)
+	if err != nil {
+		return ""
+	}
+	var parsed struct {
+		Commit string `json:"commit"`
+		Sha    string `json:"sha"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ""
+	}
+	if parsed.Commit != "" {
+		return parsed.Commit
+	}
+	return parsed.Sha
+}
+
+func writeDatasetSource(sha string) error {
+	if err := os.MkdirAll("data", 0o755); err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"repo":           "https://github.com/sapics/ip-location-db",
+		"commit":         sha,
+		"generatedAt":    time.Now().UTC().Format(time.RFC3339),
+		"countryDataset": "geo-whois-asn-country",
+		"asnDataset":     "iptoasn-asn",
+	}
+	body, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(DATASET_SOURCE_PATH, body, 0o644)
+}
+
+func ensureDatasetsLoaded() error {
+	if datasetsReady {
+		return nil
+	}
+	if _, err := os.Stat(COUNTRY_DB_PATH); err != nil {
+		return fmt.Errorf("missing local IP datasets under ./data")
+	}
+	if _, err := os.Stat(ASN_DB_PATH); err != nil {
+		return fmt.Errorf("missing local IP datasets under ./data")
+	}
+	if _, err := os.Stat(COUNTRY_META_PATH); err != nil {
+		return fmt.Errorf("missing country metadata under ./country-meta.min.json")
+	}
+	loadCountryMeta()
+	loadCountryRanges()
+	loadAsnRanges()
+	datasetsReady = true
+	return nil
+}
+
+func refreshDatasetsIfNeeded(force bool) error {
+	datasetRefreshMu.Lock()
+	defer datasetRefreshMu.Unlock()
+
+	if !force {
+		if err := ensureDatasetsLoaded(); err != nil {
+			return err
+		}
+	}
+
+	currentSha := currentDatasetSha()
+	latestSha, err := fetchLatestCommitSha()
+	if err != nil || latestSha == "" || latestSha == currentSha {
+		return err
+	}
+
+	countryCsv, err := fetchText(IPDB_COUNTRY_URL)
+	if err != nil {
+		return err
+	}
+	asnCsv, err := fetchText(IPDB_ASN_URL)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll("data", 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(COUNTRY_DB_PATH+".tmp", []byte(countryCsv), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(ASN_DB_PATH+".tmp", []byte(asnCsv), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(COUNTRY_DB_PATH+".tmp", COUNTRY_DB_PATH); err != nil {
+		return err
+	}
+	if err := os.Rename(ASN_DB_PATH+".tmp", ASN_DB_PATH); err != nil {
+		return err
+	}
+	if err := writeDatasetSource(latestSha); err != nil {
+		return err
+	}
+
+	countryMetaCache = nil
+	countryRangesCache = nil
+	asnRangesCache = nil
+	datasetsReady = false
+	return ensureDatasetsLoaded()
+}
+
+func countryMetaFor(code string) *struct {
+	Continent     string
+	ContinentCode string
+	Country       string
+	Currency      string
+} {
+	if code == "" {
+		return nil
+	}
+	meta := loadCountryMeta()[code]
+	return &struct {
+		Continent     string
+		ContinentCode string
+		Country       string
+		Currency      string
+	}{
+		Continent: func() string {
+			if name := continentNames[meta.Continent]; name != "" {
+				return name
+			}
+			return meta.Continent
+		}(),
+		ContinentCode: meta.Continent,
+		Country: func() string {
+			if meta.Name != "" {
+				return meta.Name
+			}
+			return code
+		}(),
+		Currency: meta.Currency,
+	}
+}
+
+func lookupHostname(ip string) string {
+	if ip == "" || isPrivateIP(ip) {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancel()
+	names, err := net.DefaultResolver.LookupAddr(ctx, strings.TrimPrefix(ip, "::ffff:"))
+	if err != nil || len(names) == 0 {
+		return ""
+	}
+	return strings.TrimSuffix(names[0], ".")
+}
+
+func isHostingOrg(org string) bool {
+	org = strings.ToLower(org)
+	for _, needle := range []string{
+		"cloudflare", "amazon", "aws", "google", "microsoft", "azure",
+		"digitalocean", "hetzner", "ovh", "linode", "oracle", "akamai",
+		"vultr", "fastly", "cdn", "hosting", "datacenter", "colo",
+	} {
+		if strings.Contains(org, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func isMobileOrg(org string) bool {
+	org = strings.ToLower(org)
+	for _, needle := range []string{
+		"mobile", "wireless", "cell", "telecom", "telefonica", "vodafone",
+		"orange", "verizon", "airtel", "mtn", "telstra", "singtel",
+	} {
+		if strings.Contains(org, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func lookupGeo(ip string) *GeoData {
+	if isPrivateIP(ip) {
+		return nil
+	}
+
+	if v, ok := geoCache.Load(ip); ok {
+		entry := v.(*cacheEntry)
+		if time.Now().Before(entry.exp) {
+			return entry.data
+		}
+		geoCache.Delete(ip)
+	}
+
+	if err := ensureDatasetsLoaded(); err != nil {
+		geoCache.Store(ip, &cacheEntry{data: nil, exp: time.Now().Add(geoFailTTL)})
+		return nil
+	}
+
+	ipNum, ok := ipv4ToNumber(ip)
+	var countryRow *CountryRange
+	var asnRow *AsnRange
+	if ok {
+		countryRow = searchCountryRange(loadCountryRanges(), ipNum)
+		asnRow = searchAsnRange(loadAsnRanges(), ipNum)
+	}
+
+	countryCode := ""
+	if countryRow != nil {
+		countryCode = countryRow.CountryCode
+	}
+	meta := countryMetaFor(countryCode)
+	reverse := lookupHostname(ip)
+
+	var geo *GeoData
+	if countryCode != "" || asnRow != nil {
+		org := ""
+		asn := ""
+		if asnRow != nil {
+			org = asnRow.Org
+			asn = asnRow.ASN
+		}
+		geo = &GeoData{
+			Status: "success",
+			Continent: func() string {
+				if meta != nil {
+					return meta.Continent
+				}
+				return ""
+			}(),
+			ContinentCode: func() string {
+				if meta != nil {
+					return meta.ContinentCode
+				}
+				return ""
+			}(),
+			Country: func() string {
+				if meta != nil {
+					return meta.Country
+				}
+				return countryCode
+			}(),
+			CountryCode: countryCode,
+			Region:      "",
+			RegionName:  "",
+			City:        "",
+			District:    "",
+			Zip:         "",
+			Lat:         0,
+			Lon:         0,
+			Timezone:    "",
+			Offset:      0,
+			Currency: func() string {
+				if meta != nil {
+					return meta.Currency
+				}
+				return ""
+			}(),
+			ISP: org,
+			Org: org,
+			AS: func() string {
+				if asn != "" {
+					return "AS" + asn
+				}
+				return ""
+			}(),
+			ASName:  org,
+			Reverse: reverse,
+			Mobile:  false,
+			Proxy:   false,
+			Hosting: isHostingOrg(org),
+			Query:   ip,
+		}
+	}
+
+	geoCache.Store(ip, &cacheEntry{data: geo, exp: time.Now().Add(func() time.Duration {
+		if geo != nil {
+			return geoTTL
+		}
+		return geoFailTTL
+	}())})
+	return geo
+}
+
+// ── User-Agent Parser ─────────────────────────────────────────────────────────
+
+var (
+	reEdge    = regexp.MustCompile(`(?i)Edg(?:e|A|iOS)?/(\S+)`)
+	reOpera   = regexp.MustCompile(`(?i)OPR/(\S+)`)
+	reVivaldi = regexp.MustCompile(`(?i)Vivaldi/(\S+)`)
+	reBrave   = regexp.MustCompile(`(?i)Brave/(\S+)`)
+	reFirefox = regexp.MustCompile(`(?i)Firefox/(\S+)`)
+	reSamsung = regexp.MustCompile(`(?i)SamsungBrowser/(\S+)`)
+	reUC      = regexp.MustCompile(`(?i)UCBrowser/(\S+)`)
+	reChrome  = regexp.MustCompile(`(?i)Chrome/(\S+)`)
+	reSafari  = regexp.MustCompile(`(?i)Version/(\S+).*Safari`)
+	reCurl    = regexp.MustCompile(`(?i)curl/(\S+)`)
+	reWget    = regexp.MustCompile(`(?i)Wget/(\S+)`)
+	reHTTPie  = regexp.MustCompile(`(?i)HTTPie/(\S+)`)
+	reClaude  = regexp.MustCompile(`(?i)Claude-User`)
+	reBot     = regexp.MustCompile(`(?i)bot|crawl|spider|slurp|feed|index`)
+
+	reWinNT   = regexp.MustCompile(`(?i)Windows NT ([\d.]+)`)
+	reMacOS   = regexp.MustCompile(`(?i)Mac OS X ([\d._]+)`)
+	reCrOS    = regexp.MustCompile(`(?i)CrOS`)
+	reAndroid = regexp.MustCompile(`(?i)Android ([\d.]+)`)
+	reiPhone  = regexp.MustCompile(`(?i)iPhone OS ([\d_]+)`)
+	reiPad    = regexp.MustCompile(`(?i)iPad.*OS ([\d_]+)`)
+	reLinux   = regexp.MustCompile(`(?i)Linux`)
+	reFreeBSD = regexp.MustCompile(`(?i)FreeBSD`)
+
+	reMobile  = regexp.MustCompile(`(?i)Mobile|Android.*Mobile|iPhone|iPod`)
+	// Go's RE2 has no lookaheads; the `else if` ordering above (reMobile checked
+	// first) already excludes UAs containing "Mobile", so a plain Android match
+	// here correctly identifies Android tablets.
+	reTablet  = regexp.MustCompile(`(?i)iPad|Android|Tablet`)
+	reSmartTV = regexp.MustCompile(`(?i)Smart-?TV|Tizen|Web0S|NetCast`)
+	reBotDev  = regexp.MustCompile(`(?i)bot|crawl|spider`)
+	reCLIDev  = regexp.MustCompile(`(?i)curl|wget|httpie|python-requests|go-http|java/`)
+
+	reTrident = regexp.MustCompile(`(?i)Trident`)
+	reGecko   = regexp.MustCompile(`(?i)Gecko/\d`)
+	reWebKit  = regexp.MustCompile(`(?i)AppleWebKit`)
+)
+
+var winVersions = map[string]string{
+	"10.0": "10+", "6.3": "8.1", "6.2": "8", "6.1": "7", "6.0": "Vista",
+}
+
+func parseUA(raw string) UaInfo {
+	r := UaInfo{Raw: raw, Browser: "Unknown", OS: "Unknown", Device: "Unknown", Engine: "Unknown"}
+	if raw == "" {
+		return r
+	}
+
+	type browserPattern struct {
+		re   *regexp.Regexp
+		name string
+	}
+	browsers := []browserPattern{
+		{reEdge, "Edge"}, {reOpera, "Opera"}, {reVivaldi, "Vivaldi"},
+		{reBrave, "Brave"}, {reFirefox, "Firefox"}, {reSamsung, "Samsung Internet"},
+		{reUC, "UC Browser"}, {reChrome, "Chrome"}, {reSafari, "Safari"},
+		{reCurl, "curl"}, {reWget, "Wget"}, {reHTTPie, "HTTPie"}, {reClaude, "Claude"},
+	}
+	for _, bp := range browsers {
+		m := bp.re.FindStringSubmatch(raw)
+		if m != nil {
+			r.Browser = bp.name
+			if len(m) > 1 {
+				r.BrowserVersion = m[1]
+			}
+			break
+		}
+	}
+	if r.Browser == "Unknown" && reBot.MatchString(raw) {
+		r.Browser = "Bot"
+	}
+
+	// Engine
+	if reTrident.MatchString(raw) {
+		r.Engine = "Trident"
+	}
+	if reGecko.MatchString(raw) {
+		parts := strings.SplitN(raw, "Gecko", 2)
+		if len(parts) < 2 || !strings.Contains(strings.ToLower(parts[0]), "like gecko") {
+			r.Engine = "Gecko"
+		}
+	}
+	if reWebKit.MatchString(raw) {
+		r.Engine = "WebKit"
+	}
+	switch r.Browser {
+	case "Chrome", "Edge", "Opera", "Vivaldi", "Brave":
+		r.Engine = "Blink"
+	}
+
+	// OS
+	if m := reWinNT.FindStringSubmatch(raw); m != nil {
+		r.OS = "Windows"
+		if v, ok := winVersions[m[1]]; ok {
+			r.OSVersion = v
+		} else {
+			r.OSVersion = m[1]
+		}
+	} else if m := reMacOS.FindStringSubmatch(raw); m != nil {
+		r.OS = "macOS"
+		r.OSVersion = strings.ReplaceAll(m[1], "_", ".")
+	} else if reCrOS.MatchString(raw) {
+		r.OS = "ChromeOS"
+	} else if m := reAndroid.FindStringSubmatch(raw); m != nil {
+		r.OS = "Android"
+		r.OSVersion = m[1]
+	} else if m := reiPhone.FindStringSubmatch(raw); m != nil {
+		r.OS = "iOS"
+		r.OSVersion = strings.ReplaceAll(m[1], "_", ".")
+	} else if m := reiPad.FindStringSubmatch(raw); m != nil {
+		r.OS = "iPadOS"
+		r.OSVersion = strings.ReplaceAll(m[1], "_", ".")
+	} else if reLinux.MatchString(raw) {
+		r.OS = "Linux"
+	} else if reFreeBSD.MatchString(raw) {
+		r.OS = "FreeBSD"
+	}
+
+	// Device
+	if reMobile.MatchString(raw) {
+		r.Device = "Mobile"
+	} else if reTablet.MatchString(raw) {
+		r.Device = "Tablet"
+	} else if reSmartTV.MatchString(raw) {
+		r.Device = "Smart TV"
+	} else if reBotDev.MatchString(raw) {
+		r.Device = "Bot"
+	} else if reCLIDev.MatchString(raw) {
+		r.Device = "CLI / Library"
+	} else {
+		r.Device = "Desktop"
+	}
+
+	return r
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -89,7 +880,7 @@ func port() string {
 	return defaultPort
 }
 
-func hostname() string {
+func getHostname() string {
 	h, err := os.Hostname()
 	if err != nil {
 		return "unknown"
@@ -97,7 +888,41 @@ func hostname() string {
 	return h
 }
 
-func collectHeaders(c *fiber.Ctx) ([]Header, map[string]string) {
+func countryFlag(code string) string {
+	if len(code) != 2 {
+		return ""
+	}
+	c := strings.ToUpper(code)
+	return string([]rune{rune(c[0]) + 127397, rune(c[1]) + 127397})
+}
+
+func ipVersion(ip string) string {
+	if strings.Contains(ip, ":") {
+		return "IPv6"
+	}
+	return "IPv4"
+}
+
+func getClientIP(c *fiber.Ctx) string {
+	if v := c.Get("Cf-Connecting-Ip"); v != "" {
+		return v
+	}
+	if v := c.Get("True-Client-Ip"); v != "" {
+		return v
+	}
+	if v := c.Get("X-Real-Ip"); v != "" {
+		return v
+	}
+	if v := c.Get("X-Forwarded-For"); v != "" {
+		return strings.TrimSpace(strings.SplitN(v, ",", 2)[0])
+	}
+	if ip := c.IP(); ip != "" {
+		return ip
+	}
+	return "unknown"
+}
+
+func collectHeaders(c *fiber.Ctx) (map[string]string, []HeaderEntry) {
 	raw := c.GetReqHeaders()
 	keys := make([]string, 0, len(raw))
 	for k := range raw {
@@ -105,34 +930,428 @@ func collectHeaders(c *fiber.Ctx) ([]Header, map[string]string) {
 	}
 	sort.Strings(keys)
 
-	list := make([]Header, 0, len(keys))
 	flat := make(map[string]string, len(keys))
+	list := make([]HeaderEntry, 0, len(keys))
 	for _, k := range keys {
-		v := strings.Join(raw[k], "; ")
-		list = append(list, Header{Key: k, Value: v})
+		v := strings.Join(raw[k], ", ")
 		flat[k] = v
+		list = append(list, HeaderEntry{Key: k, Value: v})
 	}
-	return list, flat
+	return flat, list
 }
 
-func timestamp() string {
-	return time.Now().UTC().Format(time.RFC3339)
+func parseAS(as string) (string, string) {
+	re := regexp.MustCompile(`^(AS\d+)\s*(.*)`)
+	m := re.FindStringSubmatch(as)
+	if m != nil {
+		return m[1], m[2]
+	}
+	return as, ""
 }
 
-// ── HTML page ─────────────────────────────────────────────────────────────────
+func formatUptime(d time.Duration) string {
+	s := int(d.Seconds())
+	days := s / 86400
+	hours := (s % 86400) / 3600
+	mins := (s % 3600) / 60
+	secs := s % 60
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm %ds", hours, mins, secs)
+	}
+	if mins > 0 {
+		return fmt.Sprintf("%dm %ds", mins, secs)
+	}
+	return fmt.Sprintf("%ds", secs)
+}
 
-func renderHTML(c *fiber.Ctx, p string) error {
-	headers, _ := collectHeaders(c)
-	hn := hostname()
-	ts := timestamp()
+func esc(s string) string {
+	return html.EscapeString(s)
+}
 
-	var rows strings.Builder
-		for _, h := range headers {
-			rows.WriteString(fmt.Sprintf("    <tr><td>%s</td><td>%s</td></tr>\n",
-				html.EscapeString(h.Key), html.EscapeString(h.Value)))
+func getCfInfo(c *fiber.Ctx) *CloudflareInfo {
+	ray := c.Get("Cf-Ray")
+	if ray == "" {
+		return nil
+	}
+
+	info := &CloudflareInfo{Detected: true}
+
+	dash := strings.LastIndex(ray, "-")
+	if dash > 0 {
+		info.Datacenter = ray[dash+1:]
+		info.Ray = ray[:dash]
+		if city, ok := cfDC[info.Datacenter]; ok {
+			info.DatacenterCity = city
 		}
+	} else {
+		info.Ray = ray
+	}
 
-		html := fmt.Sprintf(`<!DOCTYPE html>
+	info.Country = c.Get("Cf-Ipcountry")
+
+	if visitor := c.Get("Cf-Visitor"); visitor != "" {
+		var v map[string]string
+		if err := json.Unmarshal([]byte(visitor), &v); err == nil {
+			info.Scheme = v["scheme"]
+		}
+	}
+
+	info.WARP = c.Get("Cf-Warp-Tag-Id") != ""
+
+	return info
+}
+
+// ── Build Payload ─────────────────────────────────────────────────────────────
+
+func buildPayload(c *fiber.Ctx, p string) Payload {
+	ip := getClientIP(c)
+	geo := lookupGeo(ip)
+	ua := parseUA(c.Get("User-Agent"))
+	cf := getCfInfo(c)
+	flat, xmlHeaders := collectHeaders(c)
+
+	langs := []string{}
+	if al := c.Get("Accept-Language"); al != "" {
+		for _, part := range strings.Split(al, ",") {
+			lang := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
+			if lang != "" {
+				langs = append(langs, lang)
+			}
+		}
+	}
+
+	enc := []string{}
+	if ae := c.Get("Accept-Encoding"); ae != "" {
+		for _, part := range strings.Split(ae, ",") {
+			e := strings.TrimSpace(part)
+			if e != "" {
+				enc = append(enc, e)
+			}
+		}
+	}
+
+	dnt := c.Get("Dnt") == "1"
+	gpc := c.Get("Sec-Gpc") == "1"
+
+	uptime := time.Since(startTime)
+
+	protocol := c.Protocol()
+	if cf != nil && cf.Scheme != "" {
+		protocol = cf.Scheme
+	}
+
+	client := ClientInfo{
+		IP:        ip,
+		IPVersion: ipVersion(ip),
+		UserAgent: ua,
+		Languages: langs,
+		Encoding:  enc,
+		DNT:       dnt,
+		GPC:       gpc,
+	}
+
+	if geo != nil {
+		client.Hostname = geo.Reverse
+		client.Geo = &GeoInfo{
+			Continent:     geo.Continent,
+			ContinentCode: geo.ContinentCode,
+			Country:       geo.Country,
+			CountryCode:   geo.CountryCode,
+			Flag:          countryFlag(geo.CountryCode),
+			Region:        geo.Region,
+			RegionName:    geo.RegionName,
+			City:          geo.City,
+			District:      geo.District,
+			Zip:           geo.Zip,
+			Lat:           geo.Lat,
+			Lon:           geo.Lon,
+			Timezone:      geo.Timezone,
+			UTCOffset:     geo.Offset,
+			Currency:      geo.Currency,
+		}
+		asn, asName := parseAS(geo.AS)
+		client.Network = &NetworkInfo{
+			ISP:    geo.ISP,
+			Org:    geo.Org,
+			ASN:    asn,
+			ASName: asName,
+		}
+		client.Privacy = &PrivacyInfo{
+			Proxy:   geo.Proxy,
+			Hosting: geo.Hosting,
+			Mobile:  geo.Mobile,
+		}
+	}
+
+	return Payload{
+		App:        appName,
+		Ferry:      "⛵ Ferry v{{FERRY_VERSION}}",
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Client:     client,
+		Cloudflare: cf,
+		Request: RequestInfo{
+			Method:   c.Method(),
+			URL:      c.OriginalURL(),
+			Protocol: protocol,
+			Host:     c.Hostname(),
+		},
+		Server: ServerInfo{
+			Hostname:    getHostname(),
+			Port:        p,
+			Uptime:      int64(uptime.Seconds()),
+			UptimeHuman: formatUptime(uptime),
+			Runtime:     runtime.Version(),
+			Platform:    runtime.GOOS,
+			Arch:        runtime.GOARCH,
+		},
+		Headers:    flat,
+		XMLHeaders: xmlHeaders,
+	}
+}
+
+// ── HTML Renderer ─────────────────────────────────────────────────────────────
+
+func htmlRow(label, value string) string {
+	return fmt.Sprintf("<tr><td>%s</td><td>%s</td></tr>", esc(label), value)
+}
+
+func badge(text, color string) string {
+	return fmt.Sprintf(`<span class="badge badge-%s">%s</span>`, color, esc(text))
+}
+
+func buildHTML(payload Payload) string {
+	g := payload.Client.Geo
+	n := payload.Client.Network
+	pr := payload.Client.Privacy
+	cf := payload.Cloudflare
+	ua := payload.Client.UserAgent
+
+	// Hero
+	heroLocation := ""
+	if g != nil {
+		loc := g.City
+		if loc == "" {
+			loc = g.RegionName
+		}
+		if loc == "" {
+			loc = g.Country
+		}
+		heroLocation = fmt.Sprintf(`<span class="ip-flag">%s</span> %s`, g.Flag, esc(loc))
+		if g.City != "" && g.Country != "" {
+			heroLocation = fmt.Sprintf(`<span class="ip-flag">%s</span> %s, %s`, g.Flag, esc(g.City), esc(g.Country))
+		}
+	} else if cf != nil && cf.Country != "" {
+		heroLocation = fmt.Sprintf(`<span class="ip-flag">%s</span> %s`, countryFlag(cf.Country), esc(cf.Country))
+	}
+
+	heroHostname := ""
+	if payload.Client.Hostname != "" {
+		heroHostname = fmt.Sprintf(`<div class="ip-hostname">%s</div>`, esc(payload.Client.Hostname))
+	}
+
+	// Location section
+	locationRows := ""
+	if g != nil {
+		locationRows += htmlRow("Continent", fmt.Sprintf("%s (%s)", esc(g.Continent), esc(g.ContinentCode)))
+		locationRows += htmlRow("Country", fmt.Sprintf("%s %s (%s)", g.Flag, esc(g.Country), esc(g.CountryCode)))
+		if g.RegionName != "" {
+			locationRows += htmlRow("Region", esc(g.RegionName))
+		}
+		if g.City != "" {
+			locationRows += htmlRow("City", esc(g.City))
+		}
+		if g.District != "" {
+			locationRows += htmlRow("District", esc(g.District))
+		}
+		if g.Zip != "" {
+			locationRows += htmlRow("Postal / ZIP", esc(g.Zip))
+		}
+		locationRows += htmlRow("Coordinates",
+			fmt.Sprintf(`<a class="coord-link" href="https://www.openstreetmap.org/?mlat=%g&mlon=%g#map=12/%g/%g" target="_blank" rel="noopener">%g, %g</a>`,
+				g.Lat, g.Lon, g.Lat, g.Lon, g.Lat, g.Lon))
+		offsetHours := g.UTCOffset / 3600
+		sign := "+"
+		if offsetHours < 0 {
+			sign = ""
+		}
+		locationRows += htmlRow("Timezone", fmt.Sprintf("%s (UTC%s%d)", esc(g.Timezone), sign, offsetHours))
+		if g.Currency != "" {
+			locationRows += htmlRow("Currency", esc(g.Currency))
+		}
+	}
+
+	// Network section
+	networkRows := ""
+	if n != nil {
+		networkRows += htmlRow("ISP", esc(n.ISP))
+		if n.Org != "" && n.Org != n.ISP {
+			networkRows += htmlRow("Organization", esc(n.Org))
+		}
+		networkRows += htmlRow("AS Number", fmt.Sprintf(`<span class="mono">%s</span>`, esc(n.ASN)))
+		if n.ASName != "" {
+			networkRows += htmlRow("AS Name", esc(n.ASName))
+		}
+	}
+	networkRows += htmlRow("IP Version", esc(payload.Client.IPVersion))
+	if payload.Client.Hostname != "" {
+		networkRows += htmlRow("Reverse DNS", fmt.Sprintf(`<span class="mono">%s</span>`, esc(payload.Client.Hostname)))
+	}
+
+	// Privacy section
+	privacyRows := ""
+	if pr != nil {
+		connType := "Residential"
+		connColor := "green"
+		if pr.Hosting {
+			connType = "Datacenter / Hosting"
+			connColor = "yellow"
+		} else if pr.Mobile {
+			connType = "Mobile Network"
+			connColor = "blue"
+		}
+		privacyRows += htmlRow("Connection Type", badge(connType, connColor))
+		if pr.Proxy {
+			privacyRows += htmlRow("Proxy / VPN", badge("Detected", "red"))
+		} else {
+			privacyRows += htmlRow("Proxy / VPN", badge("Not Detected", "green"))
+		}
+		if pr.Hosting {
+			privacyRows += htmlRow("Hosting / DC", badge("Yes", "yellow"))
+		} else {
+			privacyRows += htmlRow("Hosting / DC", badge("No", "green"))
+		}
+		if pr.Mobile {
+			privacyRows += htmlRow("Mobile Network", badge("Yes", "blue"))
+		} else {
+			privacyRows += htmlRow("Mobile Network", badge("No", "gray"))
+		}
+	}
+
+	// Client section
+	clientRows := ""
+	if ua.Browser != "Unknown" {
+		bv := ua.Browser
+		if ua.BrowserVersion != "" {
+			bv += " " + ua.BrowserVersion
+		}
+		clientRows += htmlRow("Browser", esc(bv))
+	} else {
+		truncated := ua.Raw
+		if len(truncated) > 80 {
+			truncated = truncated[:80] + "…"
+		}
+		clientRows += htmlRow("Browser", fmt.Sprintf(`<span class="unavailable">%s</span>`, esc(truncated)))
+	}
+	if ua.Engine != "Unknown" {
+		clientRows += htmlRow("Engine", esc(ua.Engine))
+	}
+	if ua.OS != "Unknown" {
+		osStr := ua.OS
+		if ua.OSVersion != "" {
+			osStr += " " + ua.OSVersion
+		}
+		clientRows += htmlRow("OS", esc(osStr))
+	} else {
+		clientRows += htmlRow("OS", `<span class="unavailable">Unknown</span>`)
+	}
+	clientRows += htmlRow("Device", esc(ua.Device))
+	if len(payload.Client.Languages) > 0 {
+		clientRows += htmlRow("Languages", esc(strings.Join(payload.Client.Languages, ", ")))
+	}
+	if len(payload.Client.Encoding) > 0 {
+		clientRows += htmlRow("Encoding", esc(strings.Join(payload.Client.Encoding, ", ")))
+	}
+	if payload.Client.DNT {
+		clientRows += htmlRow("Do Not Track", badge("Enabled", "green"))
+	} else {
+		clientRows += htmlRow("Do Not Track", badge("Disabled", "gray"))
+	}
+	if payload.Client.GPC {
+		clientRows += htmlRow("Global Privacy", badge("Enabled", "green"))
+	}
+
+	// Cloudflare section
+	cfSection := ""
+	if cf != nil {
+		cfRows := ""
+		if cf.Datacenter != "" {
+			dcLabel := fmt.Sprintf(`<span class="mono">%s</span>`, esc(cf.Datacenter))
+			if cf.DatacenterCity != "" {
+				dcLabel += " — " + esc(cf.DatacenterCity)
+			}
+			cfRows += htmlRow("Datacenter", dcLabel)
+		}
+		if cf.Ray != "" {
+			cfRows += htmlRow("Ray ID", fmt.Sprintf(`<span class="mono">%s</span>`, esc(cf.Ray)))
+		}
+		if cf.Country != "" {
+			cfRows += htmlRow("Country", fmt.Sprintf("%s %s", countryFlag(cf.Country), esc(cf.Country)))
+		}
+		if cf.Scheme != "" {
+			cfRows += htmlRow("Scheme", esc(strings.ToUpper(cf.Scheme)))
+		}
+		if cf.WARP {
+			cfRows += htmlRow("WARP", badge("Active", "purple"))
+		} else {
+			cfRows += htmlRow("WARP", badge("Inactive", "gray"))
+		}
+		cfSection = fmt.Sprintf(`<h2>Cloudflare</h2>
+    <table><tbody>%s</tbody></table>
+    <p class="section-note">Request proxied through Cloudflare — client TLS terminates at the edge</p>`, cfRows)
+	}
+
+	// Request section
+	reqRows := htmlRow("Method", fmt.Sprintf(`<span class="mono">%s</span>`, esc(payload.Request.Method)))
+	reqRows += htmlRow("URL", fmt.Sprintf(`<span class="mono">%s</span>`, esc(payload.Request.URL)))
+	reqRows += htmlRow("Protocol", esc(strings.ToUpper(payload.Request.Protocol)))
+	reqRows += htmlRow("Host", esc(payload.Request.Host))
+	reqRows += htmlRow("Timestamp", fmt.Sprintf(`<span class="mono">%s</span>`, esc(payload.Timestamp)))
+
+	// Server section
+	srvRows := htmlRow("Hostname", fmt.Sprintf(`<span class="mono">%s</span>`, esc(payload.Server.Hostname)))
+	srvRows += htmlRow("Port", payload.Server.Port)
+	srvRows += htmlRow("Uptime", esc(payload.Server.UptimeHuman))
+	srvRows += htmlRow("Runtime", esc(payload.Server.Runtime))
+	srvRows += htmlRow("Platform", fmt.Sprintf("%s / %s", esc(payload.Server.Platform), esc(payload.Server.Arch)))
+
+	// Headers
+	sortedKeys := make([]string, 0, len(payload.Headers))
+	for k := range payload.Headers {
+		sortedKeys = append(sortedKeys, k)
+	}
+	sort.Strings(sortedKeys)
+	headerRows := ""
+	for _, k := range sortedKeys {
+		headerRows += fmt.Sprintf(`<tr><td>%s</td><td class="mono">%s</td></tr>`, esc(k), esc(payload.Headers[k]))
+	}
+
+	locationSection := ""
+	if g != nil {
+		locationSection = fmt.Sprintf(`<h2>Location</h2>
+    <table><tbody>%s</tbody></table>`, locationRows)
+	}
+
+	networkSection := ""
+	if networkRows != "" {
+		networkSection = fmt.Sprintf(`<h2>Network</h2>
+    <table><tbody>%s</tbody></table>`, networkRows)
+	}
+
+	privacySection := ""
+	if pr != nil {
+		privacySection = fmt.Sprintf(`<h2>Privacy &amp; Security</h2>
+    <table><tbody>%s</tbody></table>`, privacyRows)
+	}
+
+	heroMeta := ""
+	if heroLocation != "" {
+		heroMeta = fmt.Sprintf(`<div class="ip-meta">%s</div>`, heroLocation)
+	}
+
+	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -141,113 +1360,257 @@ func renderHTML(c *fiber.Ctx, p string) error {
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<div class="container">
-  <h1>%s</h1>
-  <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></p>
+  <div class="container">
+    <h1>%s</h1>
+    <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">⛵ Ferry</a></p>
 
-  <h2>Request</h2>
-  <table>
-    <tr><td>Method</td><td>%s</td></tr>
-    <tr><td>URL</td><td>%s</td></tr>
-    <tr><td>IP</td><td>%s</td></tr>
-    <tr><td>Protocol</td><td>%s</td></tr>
-    <tr><td>Host</td><td>%s</td></tr>
-    <tr><td>Timestamp</td><td>%s</td></tr>
-  </table>
+    <div class="ip-hero">
+      <div class="ip-label">Your IP Address</div>
+      <div class="ip-address">%s</div>
+      %s
+      %s
+    </div>
 
-  <h2>Server</h2>
-  <table>
-    <tr><td>Hostname</td><td>%s</td></tr>
-    <tr><td>Port</td><td>%s</td></tr>
-  </table>
+    %s
 
-  <h2>Headers</h2>
-  <table>
-%s  </table>
+    %s
 
-  <div class="formats">
-    <a href="/" class="active">[HTML]</a>
-    <a href="/json">[JSON]</a>
-    <a href="/xml">[XML]</a>
-    <a href="/text">[Text]</a>
+    %s
+
+    <h2>Client</h2>
+    <table><tbody>%s</tbody></table>
+
+    %s
+
+    <h2>Request</h2>
+    <table><tbody>%s</tbody></table>
+
+    <h2>Server</h2>
+    <table><tbody>%s</tbody></table>
+
+    <details>
+      <summary>Headers <span class="count">(%d)</span></summary>
+      <table><tbody>
+        %s
+      </tbody></table>
+    </details>
+
+    <div class="formats">
+      <a class="active" href="/">HTML</a>
+      <a href="/json">JSON</a>
+      <a href="/xml">XML</a>
+      <a href="/text">Text</a>
+    </div>
+
+    <footer>Built with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">⛵ Ferry</a></footer>
   </div>
-
-  <footer>Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></footer>
-</div>
 </body>
 </html>`,
-		appName, appName,
-		html.EscapeString(c.Method()),
-		html.EscapeString(c.OriginalURL()),
-		html.EscapeString(c.IP()),
-		html.EscapeString(c.Protocol()),
-		html.EscapeString(c.Hostname()),
-		ts,
-		hn, p,
-		rows.String(),
+		esc(appName),
+		esc(appName),
+		esc(payload.Client.IP),
+		heroMeta,
+		heroHostname,
+		locationSection,
+		networkSection,
+		privacySection,
+		clientRows,
+		cfSection,
+		reqRows,
+		srvRows,
+		len(sortedKeys),
+		headerRows,
 	)
+}
 
-	c.Set(fiber.HeaderContentType, "text/html; charset=utf-8")
-	return c.SendString(html)
+// ── Text Renderer ─────────────────────────────────────────────────────────────
+
+func buildText(p Payload) string {
+	g := p.Client.Geo
+	n := p.Client.Network
+	pr := p.Client.Privacy
+	cf := p.Cloudflare
+	ua := p.Client.UserAgent
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# %s\n\n", p.App))
+	sb.WriteString(fmt.Sprintf("Your IP: %s\n", p.Client.IP))
+	if p.Client.Hostname != "" {
+		sb.WriteString(fmt.Sprintf("Hostname: %s\n", p.Client.Hostname))
+	}
+	sb.WriteString(fmt.Sprintf("IP Version: %s\n", p.Client.IPVersion))
+
+	if g != nil {
+		sb.WriteString("\n## Location\n")
+		sb.WriteString(fmt.Sprintf("  Continent:   %s (%s)\n", g.Continent, g.ContinentCode))
+		sb.WriteString(fmt.Sprintf("  Country:     %s %s (%s)\n", g.Flag, g.Country, g.CountryCode))
+		if g.RegionName != "" {
+			sb.WriteString(fmt.Sprintf("  Region:      %s\n", g.RegionName))
+		}
+		if g.City != "" {
+			sb.WriteString(fmt.Sprintf("  City:        %s\n", g.City))
+		}
+		if g.District != "" {
+			sb.WriteString(fmt.Sprintf("  District:    %s\n", g.District))
+		}
+		if g.Zip != "" {
+			sb.WriteString(fmt.Sprintf("  Postal/ZIP:  %s\n", g.Zip))
+		}
+		sb.WriteString(fmt.Sprintf("  Coordinates: %g, %g\n", g.Lat, g.Lon))
+		offsetHours := g.UTCOffset / 3600
+		sign := "+"
+		if offsetHours < 0 {
+			sign = ""
+		}
+		sb.WriteString(fmt.Sprintf("  Timezone:    %s (UTC%s%d)\n", g.Timezone, sign, offsetHours))
+		if g.Currency != "" {
+			sb.WriteString(fmt.Sprintf("  Currency:    %s\n", g.Currency))
+		}
+	}
+
+	if n != nil {
+		sb.WriteString("\n## Network\n")
+		sb.WriteString(fmt.Sprintf("  ISP:          %s\n", n.ISP))
+		if n.Org != "" && n.Org != n.ISP {
+			sb.WriteString(fmt.Sprintf("  Organization: %s\n", n.Org))
+		}
+		sb.WriteString(fmt.Sprintf("  AS Number:    %s\n", n.ASN))
+		if n.ASName != "" {
+			sb.WriteString(fmt.Sprintf("  AS Name:      %s\n", n.ASName))
+		}
+	}
+
+	if pr != nil {
+		sb.WriteString("\n## Privacy\n")
+		connType := "Residential"
+		if pr.Hosting {
+			connType = "Datacenter / Hosting"
+		} else if pr.Mobile {
+			connType = "Mobile Network"
+		}
+		sb.WriteString(fmt.Sprintf("  Type:     %s\n", connType))
+		proxyStr := "Not detected"
+		if pr.Proxy {
+			proxyStr = "Detected"
+		}
+		sb.WriteString(fmt.Sprintf("  Proxy:    %s\n", proxyStr))
+		sb.WriteString(fmt.Sprintf("  Hosting:  %v\n", boolYesNo(pr.Hosting)))
+		sb.WriteString(fmt.Sprintf("  Mobile:   %v\n", boolYesNo(pr.Mobile)))
+	}
+
+	sb.WriteString("\n## Client\n")
+	bv := ua.Browser
+	if ua.BrowserVersion != "" {
+		bv += " " + ua.BrowserVersion
+	}
+	sb.WriteString(fmt.Sprintf("  Browser:    %s\n", bv))
+	if ua.Engine != "Unknown" {
+		sb.WriteString(fmt.Sprintf("  Engine:     %s\n", ua.Engine))
+	}
+	osStr := ua.OS
+	if ua.OSVersion != "" {
+		osStr += " " + ua.OSVersion
+	}
+	sb.WriteString(fmt.Sprintf("  OS:         %s\n", osStr))
+	sb.WriteString(fmt.Sprintf("  Device:     %s\n", ua.Device))
+	if len(p.Client.Languages) > 0 {
+		sb.WriteString(fmt.Sprintf("  Languages:  %s\n", strings.Join(p.Client.Languages, ", ")))
+	}
+	if len(p.Client.Encoding) > 0 {
+		sb.WriteString(fmt.Sprintf("  Encoding:   %s\n", strings.Join(p.Client.Encoding, ", ")))
+	}
+	dntStr := "Disabled"
+	if p.Client.DNT {
+		dntStr = "Enabled"
+	}
+	sb.WriteString(fmt.Sprintf("  DNT:        %s\n", dntStr))
+	if p.Client.GPC {
+		sb.WriteString("  GPC:        Enabled\n")
+	}
+	sb.WriteString(fmt.Sprintf("  User-Agent: %s\n", ua.Raw))
+
+	if cf != nil {
+		sb.WriteString("\n## Cloudflare\n")
+		if cf.Datacenter != "" {
+			dcStr := cf.Datacenter
+			if cf.DatacenterCity != "" {
+				dcStr += " (" + cf.DatacenterCity + ")"
+			}
+			sb.WriteString(fmt.Sprintf("  Datacenter: %s\n", dcStr))
+		}
+		if cf.Ray != "" {
+			sb.WriteString(fmt.Sprintf("  Ray ID:     %s\n", cf.Ray))
+		}
+		if cf.Country != "" {
+			sb.WriteString(fmt.Sprintf("  Country:    %s %s\n", countryFlag(cf.Country), cf.Country))
+		}
+		if cf.Scheme != "" {
+			sb.WriteString(fmt.Sprintf("  Scheme:     %s\n", strings.ToUpper(cf.Scheme)))
+		}
+		warpStr := "Inactive"
+		if cf.WARP {
+			warpStr = "Active"
+		}
+		sb.WriteString(fmt.Sprintf("  WARP:       %s\n", warpStr))
+	}
+
+	sb.WriteString("\n## Request\n")
+	sb.WriteString(fmt.Sprintf("  Method:    %s\n", p.Request.Method))
+	sb.WriteString(fmt.Sprintf("  URL:       %s\n", p.Request.URL))
+	sb.WriteString(fmt.Sprintf("  Protocol:  %s\n", strings.ToUpper(p.Request.Protocol)))
+	sb.WriteString(fmt.Sprintf("  Host:      %s\n", p.Request.Host))
+	sb.WriteString(fmt.Sprintf("  Timestamp: %s\n", p.Timestamp))
+
+	sb.WriteString("\n## Server\n")
+	sb.WriteString(fmt.Sprintf("  Hostname: %s\n", p.Server.Hostname))
+	sb.WriteString(fmt.Sprintf("  Port:     %s\n", p.Server.Port))
+	sb.WriteString(fmt.Sprintf("  Uptime:   %s\n", p.Server.UptimeHuman))
+	sb.WriteString(fmt.Sprintf("  Runtime:  %s\n", p.Server.Runtime))
+	sb.WriteString(fmt.Sprintf("  Platform: %s / %s\n", p.Server.Platform, p.Server.Arch))
+
+	sb.WriteString("\n## Headers\n")
+	sortedKeys := make([]string, 0, len(p.Headers))
+	for k := range p.Headers {
+		sortedKeys = append(sortedKeys, k)
+	}
+	sort.Strings(sortedKeys)
+	for _, k := range sortedKeys {
+		sb.WriteString(fmt.Sprintf("  %s: %s\n", k, p.Headers[k]))
+	}
+
+	sb.WriteString(fmt.Sprintf("\n---\nBuilt with %s — https://github.com/gastonmorixe/ferry\nFormats: / | /json | /xml | /text\n", p.Ferry))
+	return sb.String()
+}
+
+func boolYesNo(b bool) string {
+	if b {
+		return "Yes"
+	}
+	return "No"
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 func handleRoot(p string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		return renderHTML(c, p)
+		payload := buildPayload(c, p)
+		c.Set(fiber.HeaderContentType, "text/html; charset=utf-8")
+		c.Set("Accept-CH", "Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Platform, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Full-Version, Sec-CH-UA-Platform-Version")
+		return c.SendString(buildHTML(payload))
 	}
 }
 
 func handleJSON(p string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		_, flat := collectHeaders(c)
-		resp := JSONResponse{
-			App:       appName,
-			Ferry:     "⛵ Ferry v{{FERRY_VERSION}}",
-			Timestamp: timestamp(),
-			Server: ServerInfo{
-				Hostname: hostname(),
-				Port:     p,
-			},
-			Request: RequestInfoJSON{
-				Method:   c.Method(),
-				URL:      c.OriginalURL(),
-				Protocol: c.Protocol(),
-				IP:       c.IP(),
-				Host:     c.Hostname(),
-				Headers:  flat,
-			},
-		}
-		return c.JSON(resp)
+		payload := buildPayload(c, p)
+		return c.JSON(payload)
 	}
 }
 
 func handleXML(p string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		headers, _ := collectHeaders(c)
-		xmlHeaders := make([]XMLHeader, 0, len(headers))
-		for _, h := range headers {
-			xmlHeaders = append(xmlHeaders, XMLHeader{Key: h.Key, Value: h.Value})
-		}
-		resp := XMLResponse{
-			App:       appName,
-			Ferry:     "⛵ Ferry v{{FERRY_VERSION}}",
-			Timestamp: timestamp(),
-			Server: XMLServerInfo{
-				Hostname: hostname(),
-				Port:     p,
-			},
-			Request: XMLRequestInfo{
-				Method:   c.Method(),
-				URL:      c.OriginalURL(),
-				Protocol: c.Protocol(),
-				IP:       c.IP(),
-				Host:     c.Hostname(),
-				Headers:  XMLHeaders{Items: xmlHeaders},
-			},
-		}
-		out, err := xml.MarshalIndent(resp, "", "  ")
+		payload := buildPayload(c, p)
+		out, err := xml.MarshalIndent(payload, "", "  ")
 		if err != nil {
 			return err
 		}
@@ -258,30 +1621,9 @@ func handleXML(p string) fiber.Handler {
 
 func handleText(p string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		headers, _ := collectHeaders(c)
-		hn := hostname()
-		ts := timestamp()
-
-		var sb strings.Builder
-		sb.WriteString("# " + appName + "\n\n")
-		sb.WriteString("## Request\n\n")
-		sb.WriteString(fmt.Sprintf("- Method:    %s\n", c.Method()))
-		sb.WriteString(fmt.Sprintf("- URL:       %s\n", c.OriginalURL()))
-		sb.WriteString(fmt.Sprintf("- IP:        %s\n", c.IP()))
-		sb.WriteString(fmt.Sprintf("- Protocol:  %s\n", c.Protocol()))
-		sb.WriteString(fmt.Sprintf("- Host:      %s\n", c.Hostname()))
-		sb.WriteString(fmt.Sprintf("- Timestamp: %s\n", ts))
-		sb.WriteString("\n## Server\n\n")
-		sb.WriteString(fmt.Sprintf("- Hostname: %s\n", hn))
-		sb.WriteString(fmt.Sprintf("- Port:     %s\n", p))
-		sb.WriteString("\n## Headers\n\n")
-		for _, h := range headers {
-			sb.WriteString(fmt.Sprintf("- %s: %s\n", h.Key, h.Value))
-		}
-		sb.WriteString("\n---\nBuilt with ⛵ Ferry v{{FERRY_VERSION}}\nhttps://github.com/gastonmorixe/ferry\n")
-
+		payload := buildPayload(c, p)
 		c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
-		return c.SendString(sb.String())
+		return c.SendString(buildText(payload))
 	}
 }
 
@@ -295,6 +1637,22 @@ func handleHealth(c *fiber.Ctx) error {
 func main() {
 	p := port()
 	addr := "0.0.0.0:" + p
+
+	if err := ensureDatasetsLoaded(); err != nil {
+		log.Printf("dataset load failed: %v", err)
+	}
+	go func() {
+		if err := refreshDatasetsIfNeeded(false); err != nil {
+			log.Printf("dataset refresh failed: %v", err)
+		}
+		ticker := time.NewTicker(time.Duration(IPDB_REFRESH_MS) * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := refreshDatasetsIfNeeded(false); err != nil {
+				log.Printf("dataset refresh failed: %v", err)
+			}
+		}
+	}()
 
 	app := fiber.New(fiber.Config{
 		AppName:               appName,

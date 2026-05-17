@@ -59,7 +59,7 @@ make lint
 
 Must exit 0. Also run:
 ```bash
-bash -n ferry
+bash -n ferry.sh
 ```
 
 ### 3. Tests
@@ -77,12 +77,12 @@ All must pass. Report total count. If Docker tests are included (runtime HTTP 20
 ### 4. Docs Check
 
 Verify version consistency:
-- `FERRY_VERSION` in `ferry` (line 9) matches the intended release version
+- `FERRY_VERSION` in `ferry.sh` (line 9) matches the intended release version
 - `CHANGELOG.md` has an entry for this version at the top
 - No stale version references in README or docs
 
 ```bash
-grep 'FERRY_VERSION=' ferry | head -1
+grep 'FERRY_VERSION=' ferry.sh | head -1
 head -6 CHANGELOG.md
 ```
 
@@ -109,7 +109,7 @@ If not already bumped, determine the next version:
 - **Minor** (0.x.0): new features, new generators, new commands
 - **Major** (x.0.0): breaking changes
 
-Update `FERRY_VERSION` in `ferry` script. Always run `date -Iseconds` for timestamps.
+Update `FERRY_VERSION` in `ferry.sh` script. Always run `date -Iseconds` for timestamps.
 
 ### 7. Changelog
 
@@ -122,7 +122,7 @@ Add entry at top of `CHANGELOG.md` with:
 
 Stage specific files (never `git add -A`):
 ```bash
-git add ferry CHANGELOG.md [other changed files...]
+git add ferry.sh CHANGELOG.md [other changed files...]
 ```
 
 Commit with a detailed message using heredoc:
@@ -172,11 +172,11 @@ git branch -d {feature-branch}
 |------|---------|-----------|
 | Branch | `git branch --show-current` | Note which branch (do NOT switch) |
 | Lint | `make lint` | exit 0 |
-| Syntax | `bash -n ferry` | exit 0 |
+| Syntax | `bash -n ferry.sh` | exit 0 |
 | Unit tests | `bats test/unit/` | all pass |
 | Integration | `bats test/integration/` | all pass |
 | Generator | `bats test/generators/` | all pass |
-| Version | `grep FERRY_VERSION ferry` | matches release |
+| Version | `grep FERRY_VERSION ferry.sh` | matches release |
 | Changelog | `head CHANGELOG.md` | has version entry |
 | Data audit | grep for personal data | nothing found |
 | Commit | `git commit` | clean message |
@@ -191,6 +191,6 @@ git branch -d {feature-branch}
 - Personal data in staged files
 - Tests failing
 - Lint errors
-- Version mismatch between ferry script and changelog
+- Version mismatch between ferry.sh script and changelog
 - Uncommitted changes on main before merge
 - Force push needed (never force push to main)

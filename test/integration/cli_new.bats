@@ -3,7 +3,7 @@
 
 setup() {
     load '../test_helper/common'
-    FERRY="$FERRY_ROOT/ferry"
+    FERRY="$FERRY_ROOT/ferry.sh"
     export FERRY_APPS_DIR="$BATS_TEST_TMPDIR/apps"
     mkdir -p "$FERRY_APPS_DIR"
 }

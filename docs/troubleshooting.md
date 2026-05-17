@@ -45,57 +45,49 @@ App data survives container recreation because it's on the `dokku-data` volume.
 
 ## DNS Issues
 
+Ferry inherits the host's DNS configuration by default — no `dns:` override in `docker-compose.yml`. Whatever resolver the host uses (router via DHCP, systemd-resolved, NextDNS, Pi-hole, corporate) is automatically used inside the `cloudflared` and `dokku` containers via Docker's embedded DNS at `127.0.0.11`. This works for almost every setup without further configuration.
+
+### Diagnose first
+
+`ferry status` shows both sides of the DNS path:
+
+```
+Host DNS           192.168.1.1 ✓
+Container DNS      ✓ argotunnel.com resolves from webserver net
+```
+
+If `Container DNS` is broken but `Host DNS` is fine, the in-network resolver path is the problem — see "Container resolves nothing" below. If `Host DNS` itself shows ✗, fix the host's resolver first.
+
 ### Containers can't resolve external hostnames
 
-**Symptom:** `npm install` fails inside Docker builds with `EAI_AGAIN`, `getaddrinfo` errors. Or cloudflared shows `server misbehaving` when looking up Cloudflare edge IPs.
+**Symptom:** `npm install` fails inside Docker builds with `EAI_AGAIN` / `getaddrinfo`, or `cloudflared` logs `server misbehaving` when looking up Cloudflare edge IPs.
 
-**Cause:** The host uses NextDNS on `127.0.0.1:53` (via DNS-over-HTTPS), which isn't reachable from inside containers. All external DNS servers (8.8.8.8, 1.1.1.1, etc.) are blocked by the gateway firewall on port 53. The only option is NextDNS listening on the Docker bridge gateway.
+**Common causes:**
 
-**Fix:** Verify NextDNS is listening on both addresses:
+1. **Host resolver isn't reachable from containers.** If the host's `/etc/resolv.conf` points at `127.0.0.1` (a local DNS proxy like NextDNS CLI, dnsmasq, or systemd-resolved's stub), containers cannot reach that loopback. Docker's embedded DNS will try to forward there and fail.
+2. **A stale `dns:` override in compose.** Older Ferry deployments hardcoded `dns: [172.17.0.1]` to point at a NextDNS listener on the Docker bridge gateway. If that listener is gone (NextDNS uninstalled, switched resolver), cloudflared crash-loops with `lookup ... on 127.0.0.11:53: server misbehaving`.
 
-```bash
-ss -lntu | grep ':53 '
-# Must show BOTH 127.0.0.1:53 AND 172.17.0.1:53
-```
-
-If `172.17.0.1:53` is missing:
+**Fix:** Remove any `dns:` block from `docker-compose.yml` so containers inherit the host's real upstream resolver:
 
 ```bash
-sudo nextdns config set -listen localhost:53 -listen 172.17.0.1:53
-sudo systemctl restart nextdns
+# docker-compose.yml — neither service should have a dns: section
+docker compose up -d cloudflared dokku
 ```
 
-Containers in `docker-compose.yml` are configured with `dns: [172.17.0.1]`.
+Then re-check with `ferry status`. If `Container DNS` still fails, your host resolver is on loopback — add a working upstream to the compose service (see "Custom DNS upstream" below).
 
-### DNS breaks completely after reboot
+### Custom DNS upstream (optional)
 
-**Symptom:** After a host reboot, all DNS stops working. Not just containers, but the host too. `nslookup google.com` fails everywhere.
+Only needed if the host resolver is unreachable from containers (e.g. local proxy on `127.0.0.1`) **and** you can't fix the host setup. Add a `dns:` block pointing at any reachable resolver — a LAN DNS server, the router, or a public resolver if your network allows port 53 out:
 
-**Cause:** NextDNS starts before Docker. The `docker0` interface (`172.17.0.1`) doesn't exist yet when NextDNS tries to bind to it. NextDNS has a bug/design issue where if **any** listener fails to bind, it tears down **all** listeners (including the working `localhost:53`) via a shared `cancel()` context.
-
-**Fix:** Ensure the systemd drop-in exists to make NextDNS start after Docker:
-
-```bash
-cat /etc/systemd/system/nextdns.service.d/after-docker.conf
-# Should contain:
-# [Unit]
-# After=docker.service
-
-# If missing, create it:
-sudo mkdir -p /etc/systemd/system/nextdns.service.d
-sudo tee /etc/systemd/system/nextdns.service.d/after-docker.conf > /dev/null << 'EOF'
-[Unit]
-After=docker.service
-EOF
-sudo systemctl daemon-reload
+```yaml
+  cloudflared:
+    # ...
+    dns:
+      - 192.168.1.1   # your router, or any reachable nameserver
 ```
 
-### Find the Docker bridge gateway IP
-
-```bash
-docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}'
-# Should output: 172.17.0.1
-```
+Recreate the service with `docker compose up -d cloudflared`.
 
 ## Networking Issues
 
@@ -275,6 +267,21 @@ ferry deploy myapp -H app.example.com -p 3000 -y
 
 **Fix:** Redirect stdin to `/dev/null` inside `dokku_cmd` (or any function that calls `docker compose exec`) so it doesn't steal from the outer loop's input.
 
+### `Failed to verify existing ingress before deploy` on a fresh install
+
+**Symptom:** `ferry new` → `Deploy 'myapp' now? Yes` fails immediately with:
+
+```
+✗ Failed to verify existing ingress before deploy.
+! New app creation failed.
+```
+
+`ferry status` also shows a phantom row containing the literal text ` ! You haven't deployed any applications yet` under the Apps table.
+
+**Cause:** On a Dokku install with zero apps, `dokku apps:list` emits a warning line (` !     You haven't deployed any applications yet`) instead of an empty list. The older `dokku_list_apps` stripped only the `=====> My Apps` header, so the warning leaked downstream as a fake app name. When `sync_missing_ingress_from_dokku` then queried that fake app's domains, it failed — aborting the deploy preflight.
+
+**Fix:** Upgrade to ferry ≥ 0.9.1. `dokku_list_apps` now filters all Dokku banner prefixes (`=====>`, `----->`, ` !`), so empty Dokku installs are handled correctly.
+
 ### Script exits unexpectedly with set -euo pipefail
 
 **Symptom:** The script aborts at an arithmetic expression like `((count++))` with no useful error message.
@@ -352,15 +359,13 @@ docker compose exec dokku cat /home/dokku/test-app/nginx.conf
 
 ### After host reboot
 
-**Boot order:** Docker starts first (creates `docker0` bridge), then NextDNS starts (binds to `localhost:53` + `172.17.0.1:53`), then Docker Compose containers start and use NextDNS for DNS resolution.
-
-Containers with `restart: unless-stopped` auto-start. Dokku app containers also auto-start because Dokku manages their restart policy.
+Containers with `restart: unless-stopped` auto-start. Dokku app containers also auto-start because Dokku manages their restart policy. Ferry's `cloudflared` and `dokku` inherit DNS from the host, so they come up cleanly as long as the host resolver is reachable.
 
 Verify after reboot:
 
 ```bash
-# 1. Check DNS is working on both addresses
-ss -lntu | grep ':53 '
+# 1. Confirm DNS path (host + in-container)
+ferry status   # shows Host DNS and Container DNS rows
 
 # 2. Check all containers are running
 docker ps

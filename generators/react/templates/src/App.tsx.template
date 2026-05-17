@@ -1,7 +1,268 @@
+import { useEffect, useState } from 'react'
 import './App.css'
 
-function App() {
+// ── Types ───────────────────────────────────────────────────────────────────
+
+interface BrowserInfo {
+  userAgent: string
+  userAgentData: { brand: string; version: string }[] | null
+  platform: string
+  language: string
+  languages: string
+  hardwareConcurrency: number | null
+  deviceMemory: number | null
+  maxTouchPoints: number
+  cookieEnabled: boolean
+  onLine: boolean
+  pdfViewerEnabled: boolean | null
+  webdriver: boolean
+  doNotTrack: string | null
+}
+
+interface DisplayInfo {
+  screenWidth: number
+  screenHeight: number
+  availWidth: number
+  availHeight: number
+  colorDepth: number
+  pixelRatio: number
+  orientation: string | null
+  viewportWidth: number
+  viewportHeight: number
+}
+
+interface NetworkInfo {
+  type: string | null
+  effectiveType: string | null
+  downlink: number | null
+  rtt: number | null
+  saveData: boolean | null
+}
+
+interface LocaleInfo {
+  timezone: string
+  utcOffset: number
+  locale: string
+  locationHref: string
+  locationOrigin: string
+  locationProtocol: string
+  locationHost: string
+  locationPathname: string
+  locationSearch: string
+  locationHash: string
+}
+
+interface FeatureInfo {
+  touchEvents: boolean
+  webgl: boolean
+  gpuRenderer: string | null
+  gpuVendor: string | null
+  webrtc: boolean
+  serviceWorker: boolean
+  webassembly: boolean
+  notificationPermission: string | null
+  darkMode: boolean
+  reducedMotion: boolean
+}
+
+interface AllSignals {
+  browser: BrowserInfo
+  display: DisplayInfo
+  network: NetworkInfo
+  locale: LocaleInfo
+  features: FeatureInfo
+}
+
+// ── Signal Collection ───────────────────────────────────────────────────────
+
+function collectBrowser(): BrowserInfo {
+  const nav = navigator as any
+
+  let uaData: { brand: string; version: string }[] | null = null
+  try {
+    if (nav.userAgentData?.brands) {
+      uaData = nav.userAgentData.brands.map((b: any) => ({
+        brand: b.brand,
+        version: b.version,
+      }))
+    }
+  } catch { /* not available */ }
+
+  return {
+    userAgent: nav.userAgent || '',
+    userAgentData: uaData,
+    platform: nav.platform || '',
+    language: nav.language || '',
+    languages: (nav.languages || []).join(', '),
+    hardwareConcurrency: nav.hardwareConcurrency ?? null,
+    deviceMemory: nav.deviceMemory ?? null,
+    maxTouchPoints: nav.maxTouchPoints ?? 0,
+    cookieEnabled: !!nav.cookieEnabled,
+    onLine: !!nav.onLine,
+    pdfViewerEnabled: nav.pdfViewerEnabled ?? null,
+    webdriver: !!nav.webdriver,
+    doNotTrack: nav.doNotTrack ?? null,
+  }
+}
+
+function collectDisplay(): DisplayInfo {
+  const s = window.screen as any
+  return {
+    screenWidth: s.width,
+    screenHeight: s.height,
+    availWidth: s.availWidth,
+    availHeight: s.availHeight,
+    colorDepth: s.colorDepth,
+    pixelRatio: window.devicePixelRatio,
+    orientation: s.orientation?.type ?? null,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+  }
+}
+
+function collectNetwork(): NetworkInfo {
+  const conn = (navigator as any).connection
+  if (!conn) return { type: null, effectiveType: null, downlink: null, rtt: null, saveData: null }
+  return {
+    type: conn.type ?? null,
+    effectiveType: conn.effectiveType ?? null,
+    downlink: conn.downlink ?? null,
+    rtt: conn.rtt ?? null,
+    saveData: conn.saveData ?? null,
+  }
+}
+
+function collectLocale(): LocaleInfo {
   const loc = window.location
+  let timezone = ''
+  let locale = ''
+  try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone } catch { /* */ }
+  try { locale = Intl.DateTimeFormat().resolvedOptions().locale } catch { /* */ }
+
+  return {
+    timezone,
+    utcOffset: new Date().getTimezoneOffset(),
+    locale,
+    locationHref: loc.href,
+    locationOrigin: loc.origin,
+    locationProtocol: loc.protocol,
+    locationHost: loc.host,
+    locationPathname: loc.pathname,
+    locationSearch: loc.search || '',
+    locationHash: loc.hash || '',
+  }
+}
+
+function collectFeatures(): FeatureInfo {
+  const touchEvents = 'ontouchstart' in window
+
+  let webgl = false
+  let gpuRenderer: string | null = null
+  let gpuVendor: string | null = null
+  try {
+    const canvas = document.createElement('canvas')
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl')
+    if (gl) {
+      webgl = true
+      const ext = (gl as WebGLRenderingContext).getExtension('WEBGL_debug_renderer_info')
+      if (ext) {
+        gpuRenderer = (gl as WebGLRenderingContext).getParameter(ext.UNMASKED_RENDERER_WEBGL)
+        gpuVendor = (gl as WebGLRenderingContext).getParameter(ext.UNMASKED_VENDOR_WEBGL)
+      }
+    }
+  } catch { /* */ }
+
+  const webrtc = !!window.RTCPeerConnection
+  const serviceWorker = 'serviceWorker' in navigator
+  const webassembly = typeof WebAssembly === 'object'
+
+  let notificationPermission: string | null = null
+  try {
+    if ('Notification' in window) {
+      notificationPermission = Notification.permission
+    }
+  } catch { /* */ }
+
+  const darkMode = window.matchMedia('(prefers-color-scheme: dark)').matches
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+  return {
+    touchEvents,
+    webgl,
+    gpuRenderer,
+    gpuVendor,
+    webrtc,
+    serviceWorker,
+    webassembly,
+    notificationPermission,
+    darkMode,
+    reducedMotion,
+  }
+}
+
+function collectAll(): AllSignals {
+  return {
+    browser: collectBrowser(),
+    display: collectDisplay(),
+    network: collectNetwork(),
+    locale: collectLocale(),
+    features: collectFeatures(),
+  }
+}
+
+// ── Display Helpers ─────────────────────────────────────────────────────────
+
+function Val({ v }: { v: string | number | boolean | null | undefined }) {
+  if (v === null || v === undefined || v === '') {
+    return <span className="unavailable">Not available</span>
+  }
+  if (typeof v === 'boolean') {
+    return <span className={`badge ${v ? 'badge-green' : 'badge-gray'}`}>{v ? 'Yes' : 'No'}</span>
+  }
+  return <>{String(v)}</>
+}
+
+function Badge({ text, color }: { text: string; color: string }) {
+  return <span className={`badge badge-${color}`}>{text}</span>
+}
+
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <tr>
+      <td>{label}</td>
+      <td>{children}</td>
+    </tr>
+  )
+}
+
+function formatOffset(minutes: number): string {
+  const sign = minutes <= 0 ? '+' : '-'
+  const abs = Math.abs(minutes)
+  const h = Math.floor(abs / 60)
+  const m = abs % 60
+  return `UTC${sign}${h}${m > 0 ? ':' + String(m).padStart(2, '0') : ''}`
+}
+
+// ── App Component ───────────────────────────────────────────────────────────
+
+function App() {
+  const [signals, setSignals] = useState<AllSignals | null>(null)
+
+  useEffect(() => {
+    setSignals(collectAll())
+  }, [])
+
+  if (!signals) {
+    return (
+      <div className="container">
+        <h1>{{APP_NAME}}</h1>
+        <p className="subtitle">Collecting signals...</p>
+      </div>
+    )
+  }
+
+  const { browser, display, network, locale, features } = signals
+  const hasNetwork = network.type !== null || network.effectiveType !== null
 
   return (
     <div className="container">
@@ -13,45 +274,179 @@ function App() {
         </a>
       </p>
 
-      <h2>Location</h2>
+      {/* ── Hero ── */}
+      <div className="ip-hero">
+        <div className="ip-label">Client-Side Inspector</div>
+        <div className="ip-address mono">{browser.platform || 'Unknown Platform'}</div>
+        <div className="ip-meta">
+          {display.screenWidth}&times;{display.screenHeight} &middot;{' '}
+          {display.pixelRatio}x &middot;{' '}
+          {browser.language}
+        </div>
+      </div>
+
+      {/* ── Browser ── */}
+      <h2>Browser</h2>
       <table>
         <tbody>
-          <tr><td>href</td><td>{loc.href}</td></tr>
-          <tr><td>pathname</td><td>{loc.pathname}</td></tr>
-          <tr><td>search</td><td>{loc.search || '—'}</td></tr>
-          <tr><td>hash</td><td>{loc.hash || '—'}</td></tr>
-          <tr><td>origin</td><td>{loc.origin}</td></tr>
-          <tr><td>protocol</td><td>{loc.protocol}</td></tr>
-          <tr><td>host</td><td>{loc.host}</td></tr>
+          <Row label="User Agent">
+            <span className="mono mono-sm">{browser.userAgent}</span>
+          </Row>
+          {browser.userAgentData && (
+            <Row label="UA Client Hints">
+              <span className="badges">
+                {browser.userAgentData.map((b, i) => (
+                  <Badge key={i} text={`${b.brand} ${b.version}`} color="blue" />
+                ))}
+              </span>
+            </Row>
+          )}
+          <Row label="Platform"><Val v={browser.platform} /></Row>
+          <Row label="Language"><Val v={browser.language} /></Row>
+          <Row label="Languages"><Val v={browser.languages} /></Row>
+          <Row label="Cookies Enabled"><Val v={browser.cookieEnabled} /></Row>
+          <Row label="Online"><Val v={browser.onLine} /></Row>
+          <Row label="PDF Viewer"><Val v={browser.pdfViewerEnabled} /></Row>
+          <Row label="WebDriver (Automation)">
+            {browser.webdriver
+              ? <Badge text="Detected" color="red" />
+              : <Badge text="Not Detected" color="green" />}
+          </Row>
+          <Row label="Do Not Track"><Val v={browser.doNotTrack === '1' ? 'Enabled' : browser.doNotTrack === '0' ? 'Disabled' : browser.doNotTrack} /></Row>
         </tbody>
       </table>
 
-      <h2>Navigator</h2>
+      {/* ── Display ── */}
+      <h2>Display</h2>
       <table>
         <tbody>
-          <tr><td>userAgent</td><td>{navigator.userAgent}</td></tr>
-          <tr><td>language</td><td>{navigator.language}</td></tr>
-          <tr><td>languages</td><td>{navigator.languages.join(', ')}</td></tr>
-          <tr><td>platform</td><td>{navigator.platform}</td></tr>
-          <tr><td>cookieEnabled</td><td>{String(navigator.cookieEnabled)}</td></tr>
-          <tr><td>onLine</td><td>{String(navigator.onLine)}</td></tr>
+          <Row label="Screen Resolution">
+            <span className="mono">{display.screenWidth} &times; {display.screenHeight}</span>
+          </Row>
+          <Row label="Available Area">
+            <span className="mono">{display.availWidth} &times; {display.availHeight}</span>
+          </Row>
+          <Row label="Viewport">
+            <span className="mono">{display.viewportWidth} &times; {display.viewportHeight}</span>
+          </Row>
+          <Row label="Pixel Ratio">
+            <span className="mono">{display.pixelRatio}x</span>
+            {display.pixelRatio > 1 && <>{' '}<Badge text="Retina / HiDPI" color="purple" /></>}
+          </Row>
+          <Row label="Color Depth"><span className="mono">{display.colorDepth}-bit</span></Row>
+          <Row label="Orientation"><Val v={display.orientation} /></Row>
         </tbody>
       </table>
 
-      <h2>Screen</h2>
+      {/* ── System ── */}
+      <h2>System</h2>
       <table>
         <tbody>
-          <tr><td>screen</td><td>{screen.width} &times; {screen.height}</td></tr>
-          <tr><td>viewport</td><td>{window.innerWidth} &times; {window.innerHeight}</td></tr>
-          <tr><td>devicePixelRatio</td><td>{window.devicePixelRatio}</td></tr>
-          <tr><td>colorDepth</td><td>{screen.colorDepth}-bit</td></tr>
+          <Row label="CPU Cores"><Val v={browser.hardwareConcurrency} /></Row>
+          <Row label="Device Memory">
+            {browser.deviceMemory !== null
+              ? <span className="mono">{browser.deviceMemory} GB</span>
+              : <span className="unavailable">Not available</span>}
+          </Row>
+          <Row label="Max Touch Points"><span className="mono">{browser.maxTouchPoints}</span></Row>
         </tbody>
       </table>
 
+      {/* ── Network ── */}
+      <h2>Network</h2>
+      <table>
+        <tbody>
+          <Row label="Online Status">
+            {browser.onLine
+              ? <Badge text="Online" color="green" />
+              : <Badge text="Offline" color="red" />}
+          </Row>
+          {hasNetwork ? (
+            <>
+              <Row label="Connection Type"><Val v={network.type} /></Row>
+              <Row label="Effective Type"><Val v={network.effectiveType} /></Row>
+              <Row label="Downlink">
+                {network.downlink !== null
+                  ? <span className="mono">{network.downlink} Mbps</span>
+                  : <span className="unavailable">Not available</span>}
+              </Row>
+              <Row label="RTT">
+                {network.rtt !== null
+                  ? <span className="mono">{network.rtt} ms</span>
+                  : <span className="unavailable">Not available</span>}
+              </Row>
+              <Row label="Save Data">
+                {network.saveData !== null
+                  ? <Val v={network.saveData} />
+                  : <span className="unavailable">Not available</span>}
+              </Row>
+            </>
+          ) : (
+            <Row label="Network Info">
+              <span className="unavailable">Network Information API not available</span>
+            </Row>
+          )}
+        </tbody>
+      </table>
+
+      {/* ── Features ── */}
+      <h2>Features</h2>
+      <table>
+        <tbody>
+          <Row label="Touch Events"><Val v={features.touchEvents} /></Row>
+          <Row label="WebGL"><Val v={features.webgl} /></Row>
+          {features.gpuRenderer && (
+            <Row label="GPU Renderer">
+              <span className="mono mono-sm">{features.gpuRenderer}</span>
+            </Row>
+          )}
+          {features.gpuVendor && (
+            <Row label="GPU Vendor"><Val v={features.gpuVendor} /></Row>
+          )}
+          <Row label="WebRTC"><Val v={features.webrtc} /></Row>
+          <Row label="Service Worker"><Val v={features.serviceWorker} /></Row>
+          <Row label="WebAssembly"><Val v={features.webassembly} /></Row>
+          <Row label="Notifications">
+            {features.notificationPermission !== null ? (
+              <Badge
+                text={features.notificationPermission}
+                color={
+                  features.notificationPermission === 'granted' ? 'green'
+                    : features.notificationPermission === 'denied' ? 'red'
+                    : 'yellow'
+                }
+              />
+            ) : (
+              <span className="unavailable">Not available</span>
+            )}
+          </Row>
+          <Row label="Prefers Dark Mode"><Val v={features.darkMode} /></Row>
+          <Row label="Prefers Reduced Motion"><Val v={features.reducedMotion} /></Row>
+        </tbody>
+      </table>
+
+      {/* ── Locale & Location ── */}
+      <h2>Locale &amp; Location</h2>
+      <table>
+        <tbody>
+          <Row label="Timezone"><Val v={locale.timezone} /></Row>
+          <Row label="UTC Offset"><span className="mono">{formatOffset(locale.utcOffset)}</span></Row>
+          <Row label="System Locale"><Val v={locale.locale} /></Row>
+          <Row label="Origin"><span className="mono">{locale.locationOrigin}</span></Row>
+          <Row label="Protocol"><span className="mono">{locale.locationProtocol}</span></Row>
+          <Row label="Host"><span className="mono">{locale.locationHost}</span></Row>
+          <Row label="Pathname"><span className="mono">{locale.locationPathname}</span></Row>
+          <Row label="Search"><Val v={locale.locationSearch || null} /></Row>
+          <Row label="Hash"><Val v={locale.locationHash || null} /></Row>
+        </tbody>
+      </table>
+
+      {/* ── Note ── */}
       <div className="note">
-        Server-side info (IP address, request headers) is not available from a
-        static SPA — there is no server to read them. Deploy a server-side
-        generator (Next.js, NestJS, Express) to see those fields.
+        <strong>Note:</strong> Client-side apps cannot directly determine
+        your IP address, geolocation, or read request headers. For that
+        data, deploy a server-side generator (Express, Next.js, NestJS,
+        FastAPI, Rails, Django, Go, Rust) with Ferry.
       </div>
 
       <footer>

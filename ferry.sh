@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.9.0"
+FERRY_VERSION="0.11.0"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -39,6 +39,20 @@ _IS_TTY=false
 
 # Terminal width
 _term_width() { tput cols 2>/dev/null || echo 80; }
+
+_divider_line() {
+    local width="${1:-0}"
+    (( width > 40 )) && width=40
+    (( width < 0 )) && width=0
+
+    local line=""
+    while (( width > 0 )); do
+        line+="─"
+        ((width--))
+    done
+
+    printf '%s' "$line"
+}
 
 # --- 256-color palette (muted, modern) ---
 if ((_COLOR_TIER >= 256)); then
@@ -102,12 +116,11 @@ header()  { echo ""; echo -e "  ${C_BOLD}${C_WHITE}$*${C_RESET}"; }
 
 section_header() {
     local title="$1"
-    local w
-    w=$(_term_width)
-    local line_len=$((w - ${#title} - 4))
-    ((line_len < 4)) && line_len=4
+    # Keep the full header block at 40 visible columns so headers line up.
+    local line_len=$((40 - ${#title} - 1))
+    ((line_len < 0)) && line_len=0
     local line
-    line=$(printf '─%.0s' $(seq 1 "$line_len"))
+    line=$(_divider_line "$line_len")
     echo ""
     echo -e "  ${C_BOLD}${C_WHITE}${title}${C_RESET} ${C_CHROME}${line}${C_RESET}"
 }
@@ -143,7 +156,7 @@ box() {
     (( max_len < 30 )) && max_len=30
 
     local border
-    border=$(printf '─%.0s' $(seq 1 $((max_len + 2))))
+    border=$(_divider_line $((max_len + 2)))
 
     echo -e "  ${C_CHROME}╭${border}╮${C_RESET}"
     for line in "${lines[@]}"; do
@@ -166,24 +179,85 @@ prompt() {
     fi
 }
 
+prompt_hint() {
+    local hint="${1:-}"
+    [[ -z "$hint" ]] && return 0
+    echo -e "  ${C_DIM}${hint}${C_RESET}"
+}
+
+tui_read() {
+    local __var="$1" label="$2" default="${3:-}" allow_empty="${4:-false}"
+    local reply
+
+    while true; do
+        prompt "$label" "$default"
+        prompt_hint "type ${C_BOLD}back${C_RESET}${C_DIM} to go back, ${C_BOLD}quit${C_RESET}${C_DIM} to exit"
+        IFS= read -r reply || return 3
+
+        case "${reply,,}" in
+            back|b|cancel) return 2 ;;
+            quit|q|exit)   return 3 ;;
+        esac
+
+        if [[ -z "$reply" && -n "$default" ]]; then
+            reply="$default"
+        fi
+
+        if [[ -z "$reply" && "$allow_empty" != true ]]; then
+            warn "A value is required. Type back to return."
+            continue
+        fi
+
+        printf -v "$__var" '%s' "$reply"
+        return 0
+    done
+}
+
 confirm() {
     local msg="${1:-Continue?}"
     if $YES; then return 0; fi
-    if ! $_IS_TTY; then return 1; fi
-    echo -en "  ${C_WARN}${msg}${C_RESET} ${C_DIM}[${C_RESET}${C_BOLD}y${C_RESET}${C_DIM}/${C_RESET}N${C_DIM}]${C_RESET} ${C_ACCENT}❯${C_RESET} "
-    read -r reply
-    [[ "$reply" =~ ^[Yy]$ ]]
+    if ! $_IS_TTY; then return 2; fi
+
+    local confirm_rc=0
+    if tui_select "$msg" "Yes" "No"; then
+        confirm_rc=0
+    else
+        confirm_rc=$?
+    fi
+    case "$confirm_rc" in
+        0)
+            case "$_TUI_SELECTED" in
+                0) return 0 ;;
+                1) return 2 ;;
+            esac
+            ;;
+        2|3) return "$confirm_rc" ;;
+        *) return 2 ;;
+    esac
 }
 
 confirm_name() {
     local name="$1"
     if $YES; then return 0; fi
-    if ! $_IS_TTY; then return 1; fi
+    if ! $_IS_TTY; then return 2; fi
+
     echo ""
     echo -e "  ${C_ERROR}Type '${C_BOLD}${name}${C_RESET}${C_ERROR}' to confirm:${C_RESET}"
-    echo -en "  ${C_ACCENT}❯${C_RESET} "
-    read -r reply
-    [[ "$reply" == "$name" ]]
+    prompt_hint "type ${C_BOLD}back${C_RESET}${C_DIM} to cancel, ${C_BOLD}quit${C_RESET}${C_DIM} to exit"
+
+    local reply
+    while true; do
+        echo -en "  ${C_ACCENT}❯${C_RESET} "
+        IFS= read -r reply || return 3
+        case "${reply,,}" in
+            back|b|cancel) return 2 ;;
+            quit|q|exit)   return 3 ;;
+        esac
+        if [[ "$reply" == "$name" ]]; then
+            return 0
+        fi
+        warn "Name did not match. Try again or type back."
+    done
 }
 
 dokku_cmd() {
@@ -469,19 +543,37 @@ cf_require_auth() {
         echo ""
         error "${context} requires a valid Cloudflare API token."
         echo ""
+        local auth_choice=0
         if confirm "Run login setup now?"; then
-            cmd_login
-            # Re-check after login
-            if [[ -z "$CF_API_TOKEN" ]] || ! cf_token_verify; then
-                error "Still not authenticated. Cannot proceed."
-                return 1
-            fi
-            success "Authenticated! Continuing..."
-            echo ""
-            return 0
+            auth_choice=0
         else
-            return 1
+            auth_choice=$?
         fi
+        case "$auth_choice" in
+            0)
+                if cmd_login; then
+                    :
+                else
+                    local login_rc=$?
+                    case "$login_rc" in
+                        2) return 2 ;;
+                        3) return 3 ;;
+                        *) return 1 ;;
+                    esac
+                fi
+                # Re-check after login
+                if [[ -z "$CF_API_TOKEN" ]] || ! cf_token_verify; then
+                    error "Still not authenticated. Cannot proceed."
+                    return 1
+                fi
+                success "Authenticated! Continuing..."
+                echo ""
+                return 0
+            ;;
+            2) return 2 ;;
+            3) return 3 ;;
+            *) return 2 ;;
+        esac
     fi
     return 0
 }
@@ -618,6 +710,7 @@ sync_missing_ingress_from_dokku() {
     ingress=$(_tunnel_get_ingress) || return 1
 
     local added=0
+    local -a added_rules=()
     while IFS= read -r app; do
         [[ -z "$app" ]] && continue
         local domains
@@ -649,12 +742,57 @@ else:
 print(json.dumps(rules))
 " "$domain") || return 1
                 ((added++)) || true
+                added_rules+=("$app"$'\t'"$domain")
             fi
         done <<< "$domains"
     done <<< "$apps"
 
     if ((added > 0)); then
+        if ! $YES; then
+            {
+                echo ""
+                box "${C_WARN}${C_BOLD}Ingress recovery needed${C_RESET}" \
+                    "" \
+                    "  Dokku already knows about these app domains, but the Cloudflare Tunnel" \
+                    "  ingress list is missing them. Ferry can restore them now so the tunnel" \
+                    "  keeps routing those hosts to Dokku." \
+                    ""
+                for rule in "${added_rules[@]}"; do
+                    local rule_app rule_domain
+                    IFS=$'\t' read -r rule_app rule_domain <<< "$rule"
+                    printf '  %s- %s → http://dokku:80 (Dokku app %s)%s\n' \
+                        "$C_DIM" "$rule_domain" "$rule_app" "$C_RESET"
+                done
+                echo ""
+            } >&2
+            local recovery_choice=0
+            if confirm "Restore these ingress rule(s) now?"; then
+                recovery_choice=0
+            else
+                recovery_choice=$?
+            fi
+            case "$recovery_choice" in
+                0) ;;
+                2)
+                    echo "  ${C_WARN}!${C_RESET} Skipped ingress recovery." >&2
+                    echo "0"
+                    return 0
+                    ;;
+                3) return 3 ;;
+                *) echo "0"; return 0 ;;
+            esac
+        fi
+
         _tunnel_put_ingress "$ingress" >/dev/null || return 1
+        {
+            printf '  ! Restored %d missing ingress rule(s) from Dokku before deploy\n' "$added"
+            printf '    Why: Dokku already reports these app domains, but the Cloudflare Tunnel ingress list was missing them.\n'
+            for rule in "${added_rules[@]}"; do
+                local rule_app rule_domain
+                IFS=$'\t' read -r rule_app rule_domain <<< "$rule"
+                printf '    - %s -> http://dokku:80 (Dokku app %s)\n' "$rule_domain" "$rule_app"
+            done
+        } >&2
     fi
     echo "$added"
 }
@@ -794,6 +932,24 @@ if len(new_rules) == len(rules):
     print(f\"WARNING: hostname '{hostname}' not found in ingress\", file=sys.stderr)
 print(json.dumps(new_rules))
 " "$hostname") || return 1
+
+    _tunnel_put_ingress "$new_ingress" >/dev/null || return 1
+    echo "ok"
+}
+
+yaml_prune_ingress() {
+    local prune_hosts="${1:-}"
+    local ingress
+    ingress=$(_tunnel_get_ingress) || return 1
+
+    local new_ingress
+    new_ingress=$(printf '%s' "$ingress" | python3 -c "
+import json, sys
+prune_hosts = set(x for x in sys.argv[1].split('\\n') if x)
+rules = json.load(sys.stdin)
+new_rules = [r for r in rules if r.get('hostname') not in prune_hosts]
+print(json.dumps(new_rules))
+" "$prune_hosts") || return 1
 
     _tunnel_put_ingress "$new_ingress" >/dev/null || return 1
     echo "ok"
@@ -1035,6 +1191,48 @@ dns_check() {
     dig +short "$hostname" 2>/dev/null | head -1
 }
 
+# Print each host nameserver, one per line. Uses systemd-resolved's
+# authoritative D-Bus / CLI surface (`resolvectl dns`) rather than parsing
+# /etc/resolv.conf — on systems where NetworkManager wrote that file directly
+# (`resolv.conf mode: foreign`) it's a compatibility stub, not the source of
+# truth. Falls back to the resolved-owned flat file, then to libc's
+# /etc/resolv.conf only on hosts without systemd-resolved.
+_detect_host_resolvers() {
+    if command -v resolvectl >/dev/null 2>&1; then
+        # `resolvectl dns` output is one line per link:
+        #   Global: 192.168.1.1
+        #   Link 2 (eth0): 192.168.1.1 fe80::1
+        #   Link 3 (tailscale0):
+        resolvectl dns 2>/dev/null \
+            | awk -F': ' 'NF >= 2 && $2 != "" {
+                n = split($2, a, /[[:space:]]+/);
+                for (i = 1; i <= n; i++) if (a[i] != "") print a[i]
+              }' \
+            | awk 'NF && !seen[$0]++'
+        return
+    fi
+    local src="/run/systemd/resolve/resolv.conf"
+    [[ -r "$src" ]] || src="/etc/resolv.conf"
+    awk '/^nameserver[[:space:]]/ {print $2}' "$src" 2>/dev/null \
+        | awk 'NF && !seen[$0]++'
+}
+
+# Probe a resolver from the host. Returns 0 if it answers a real query.
+_probe_resolver() {
+    local ns="$1"
+    [[ -n "$ns" ]] || return 1
+    dig +short +time=2 +tries=1 "@$ns" cloudflare.com 2>/dev/null \
+        | grep -qE '^[0-9]'
+}
+
+# Probe DNS from inside the Docker network Ferry's services use. Spins up an
+# ephemeral busybox on the `webserver` network and resolves a real Cloudflare
+# hostname — the exact failure mode that takes cloudflared offline if broken.
+_probe_container_dns() {
+    docker run --rm --network webserver busybox:latest \
+        nslookup argotunnel.com >/dev/null 2>&1
+}
+
 ###############################################################################
 # Cloudflared Operations
 ###############################################################################
@@ -1092,7 +1290,10 @@ dokku_list_apps() {
         warn "Failed to list Dokku apps"
         return 1
     }
-    echo "$output" | tail -n +2
+    # Drop Dokku banner lines: "=====>" (info), "----->" (step),
+    # and " ! ..." (warning — e.g. "You haven't deployed any applications yet").
+    # Dokku app names cannot start with these characters, so this filter is safe.
+    printf '%s\n' "$output" | awk '/^[[:space:]]*[-=!]/ { next } NF'
 }
 
 dokku_app_domains_all() {
@@ -1120,6 +1321,20 @@ dokku_app_domains_all() {
 dokku_app_domains() {
     local name="$1"
     dokku_app_domains_all "$name" | head -1
+}
+
+dokku_list_all_domains() {
+    local apps domains=""
+    apps=$(dokku_list_apps 2>/dev/null) || return 1
+
+    local app app_domains
+    while IFS= read -r app; do
+        [[ -z "$app" ]] && continue
+        app_domains=$(dokku_app_domains_all "$app") || return 1
+        [[ -n "$app_domains" ]] && domains+="${app_domains}"$'\n'
+    done <<< "$apps"
+
+    printf '%s' "$domains" | awk 'NF && !seen[$0]++'
 }
 
 dokku_app_ports() {
@@ -1385,24 +1600,32 @@ cmd_status() {
         kv_color "Cloudflare Tunnel" "Unknown (no connection logs)" "$C_ERROR"
     fi
 
-    # NextDNS
-    local dns_local dns_docker
-    dns_local=$(dig +short +time=2 @127.0.0.1 cloudflare.com 2>/dev/null && echo "ok" || echo "fail")
-    dns_docker=$(dig +short +time=2 @172.17.0.1 cloudflare.com 2>/dev/null && echo "ok" || echo "fail")
-    local dns_str=""
-    if [[ "$dns_local" == *"ok"* ]]; then
-        dns_str="${C_SUCCESS}127.0.0.1 ✓${C_RESET}"
+    # DNS (adaptive — auto-detects host resolvers, probes container path)
+    local -a host_resolvers
+    mapfile -t host_resolvers < <(_detect_host_resolvers)
+
+    local host_dns_str=""
+    if ((${#host_resolvers[@]} == 0)); then
+        host_dns_str="${C_ERROR}none detected${C_RESET}"
     else
-        dns_str="${C_ERROR}127.0.0.1 ✗${C_RESET}"
+        for ns in "${host_resolvers[@]}"; do
+            if _probe_resolver "$ns"; then
+                host_dns_str+="${C_SUCCESS}${ns} ✓${C_RESET}  "
+            else
+                host_dns_str+="${C_ERROR}${ns} ✗${C_RESET}  "
+            fi
+        done
     fi
-    dns_str+="  "
-    if [[ "$dns_docker" == *"ok"* ]]; then
-        dns_str+="${C_SUCCESS}172.17.0.1 ✓${C_RESET}"
+    printf '    %b%-18s%b ' "$C_DIM" "Host DNS" "$C_RESET"
+    echo -e "$host_dns_str"
+
+    if _probe_container_dns; then
+        printf '    %b%-18s%b ' "$C_DIM" "Container DNS" "$C_RESET"
+        echo -e "${C_SUCCESS}✓ argotunnel.com resolves from webserver net${C_RESET}"
     else
-        dns_str+="${C_ERROR}172.17.0.1 ✗${C_RESET}"
+        printf '    %b%-18s%b ' "$C_DIM" "Container DNS" "$C_RESET"
+        echo -e "${C_ERROR}✗ DNS broken inside webserver net${C_RESET}"
     fi
-    printf '    %b%-18s%b ' "$C_DIM" "NextDNS" "$C_RESET"
-    echo -e "$dns_str"
 
     # API token status
     if [[ -n "$CF_API_TOKEN" ]]; then
@@ -1433,7 +1656,8 @@ cmd_status() {
         dim "(no apps)"
     else
         printf "    ${C_DIM}%-14s %-30s %-14s %-14s %-5s %s${C_RESET}\n" "NAME" "DOMAIN" "PORTS" "STATUS" "DNS" "LIVE"
-        printf "    ${C_CHROME}%s${C_RESET}\n" "$(printf '─%.0s' $(seq 1 85))"
+        # Table divider removed for compact/mobile TUI rendering.
+        # printf "    ${C_CHROME}%s${C_RESET}\n" "$(_divider_line 85)"
 
         while IFS= read -r app; do
             local domain ports status dns_result dns_icon status_icon
@@ -1500,17 +1724,30 @@ cmd_status() {
     # --- Cross-validation ---
     echo ""
     local warnings=0
+    local all_domains=""
+    all_domains=$(dokku_list_all_domains 2>/dev/null) || true
 
     while IFS= read -r app; do
-        local domain
-        domain=$(dokku_app_domains "$app")
-        if [[ -n "$domain" ]]; then
+        local matched=0
+        while IFS= read -r domain; do
+            [[ -z "$domain" ]] && continue
             local has
             has=$(yaml_has_hostname "$domain")
-            if [[ "$has" != "yes" ]]; then
-                warn "App '${app}' (${domain}) has no matching ingress rule"
-                ((warnings++)) || true
+            if [[ "$has" == "yes" ]]; then
+                matched=1
+                break
             fi
+        done < <(dokku_app_domains_all "$app")
+
+        if ((matched == 0)); then
+            local domain
+            domain=$(dokku_app_domains "$app")
+            if [[ -n "$domain" ]]; then
+                warn "App '${app}' (${domain}) has no matching ingress rule"
+            else
+                warn "App '${app}' has no matching ingress rule"
+            fi
+            ((warnings++)) || true
         fi
     done <<< "$apps"
 
@@ -1518,17 +1755,8 @@ cmd_status() {
         if [[ "$hostname" == "(catch-all)" ]]; then
             continue
         fi
-        local found=0
-        while IFS= read -r app; do
-            local domain
-            domain=$(dokku_app_domains "$app")
-            if [[ "$domain" == "$hostname" ]]; then
-                found=1
-                break
-            fi
-        done <<< "$apps"
-        if ((found == 0)); then
-            warn "Ingress rule '${hostname}' has no matching Dokku app"
+        if ! grep -Fxq "$hostname" <<< "$all_domains"; then
+            warn "Ingress rule '${hostname}' has no matching Dokku app (run: ferry prune reconcile)"
             ((warnings++)) || true
         fi
     done < <(yaml_list_ingress)
@@ -1558,7 +1786,8 @@ cmd_list() {
     section_header "Apps"
     echo ""
     printf "    ${C_DIM}%-14s %-30s %-14s %-14s${C_RESET}\n" "NAME" "DOMAIN" "PORTS" "STATUS"
-    printf "    ${C_CHROME}%s${C_RESET}\n" "$(printf '─%.0s' $(seq 1 70))"
+    # Table divider removed for compact/mobile TUI rendering.
+    # printf "    ${C_CHROME}%s${C_RESET}\n" "$(_divider_line 70)"
     while IFS= read -r app; do
         local domain ports status status_icon
         domain=$(dokku_app_domains "$app")
@@ -1585,14 +1814,14 @@ cmd_deploy() {
 
     local name="" hostname="" port="" repo="" branch="" app_dir="" no_push=false
     local has_app_source=false port_explicit=false
-    local memory="" memory_explicit=false
+    local memory=""
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -H|--hostname) hostname="$2"; shift 2 ;;
             -p|--port)     port="$2"; port_explicit=true; shift 2 ;;
-            -m|--memory)   memory="$2"; memory_explicit=true; shift 2 ;;
+            -m|--memory)   memory="$2"; shift 2 ;;
             -r|--repo)     repo="$2"; shift 2 ;;
             -b|--branch)   branch="$2"; shift 2 ;;
             -d|--dir)      app_dir="$2"; shift 2 ;;
@@ -1613,8 +1842,13 @@ cmd_deploy() {
 
     # App name (prompt if not given)
     if [[ -z "$name" ]]; then
-        prompt "App name (a-z, 0-9, hyphens)"
-        read -r name
+        tui_read name "App name (a-z, 0-9, hyphens)" "" false || {
+            case $? in
+                2) return 0 ;;
+                3) return 3 ;;
+                *) return 1 ;;
+            esac
+        }
     fi
 
     # Validate name
@@ -1628,13 +1862,15 @@ cmd_deploy() {
         return 1
     fi
 
-    local restored_ingress=0
-    restored_ingress=$(sync_missing_ingress_from_dokku 2>/dev/null) || {
-        error "Failed to verify existing ingress before deploy."
-        return 1
-    }
-    if [[ "$restored_ingress" =~ ^[0-9]+$ ]] && ((restored_ingress > 0)); then
-        warn "Restored $restored_ingress missing ingress rule(s) from Dokku before deploy"
+    if sync_missing_ingress_from_dokku >/dev/null; then
+        :
+    else
+        local restored_rc=$?
+        case "$restored_rc" in
+            2) return 0 ;;
+            3) return 3 ;;
+            *) error "Failed to verify existing ingress before deploy."; return 1 ;;
+        esac
     fi
 
     # --- Resolve app source ---
@@ -1660,14 +1896,29 @@ cmd_deploy() {
         info "Found existing app source at $app_dir"
     elif ! $YES; then
         # Interactive: offer to clone
+        local clone_choice=0
         if confirm "Clone app from GitHub?"; then
-            prompt "GitHub repo (owner/repo)"
-            read -r repo
-            if [[ -n "$repo" ]]; then
-                app_dir="$FERRY_APPS_DIR/$name"
-                has_app_source=true
-            fi
+            clone_choice=0
+        else
+            clone_choice=$?
         fi
+        case "$clone_choice" in
+            0)
+                tui_read repo "GitHub repo (owner/repo)" "" false || {
+                    case $? in
+                        2) return 0 ;;
+                        3) return 3 ;;
+                        *) return 1 ;;
+                    esac
+                }
+                if [[ -n "$repo" ]]; then
+                    app_dir="$FERRY_APPS_DIR/$name"
+                    has_app_source=true
+                fi
+                ;;
+            2) ;;
+            3) return 3 ;;
+        esac
     fi
 
     # --- Port auto-detection (only if dir already exists and port not explicit) ---
@@ -1691,8 +1942,13 @@ cmd_deploy() {
                     "" \
                     "  Set it in ${C_ACCENT}.env${C_RESET} or enter a default domain now."
                 echo ""
-                prompt "Default domain (e.g. example.com)" "apps.local"
-                read -r DOKKU_HOSTNAME
+                tui_read DOKKU_HOSTNAME "Default domain (e.g. example.com)" "apps.local" false || {
+                    case $? in
+                        2) return 0 ;;
+                        3) return 3 ;;
+                        *) return 1 ;;
+                    esac
+                }
                 DOKKU_HOSTNAME="${DOKKU_HOSTNAME:-apps.local}"
             fi
         fi
@@ -1700,8 +1956,13 @@ cmd_deploy() {
         if $YES; then
             hostname="$default_host"
         else
-            prompt "Hostname" "$default_host"
-            read -r hostname
+            tui_read hostname "Hostname" "$default_host" false || {
+                case $? in
+                    2) return 0 ;;
+                    3) return 3 ;;
+                    *) return 1 ;;
+                esac
+            }
             hostname="${hostname:-$default_host}"
         fi
     fi
@@ -1724,13 +1985,28 @@ cmd_deploy() {
                 info "Auto-detected port $port ($detected_source)"
             else
                 echo -e "  ${C_INFO}·${C_RESET} Detected port ${C_BOLD}${C_WHITE}$detected_port${C_RESET} ($detected_source)"
+                local port_choice=0
                 if confirm "Use detected port $detected_port?"; then
-                    port="$detected_port"
+                    port_choice=0
                 else
-                    prompt "App port" "5000"
-                    read -r port
-                    port="${port:-5000}"
+                    port_choice=$?
                 fi
+                case "$port_choice" in
+                    0)
+                        port="$detected_port"
+                        ;;
+                    2)
+                        tui_read port "App port" "5000" false || {
+                            case $? in
+                                2) return 0 ;;
+                                3) return 3 ;;
+                                *) return 1 ;;
+                            esac
+                        }
+                        port="${port:-5000}"
+                        ;;
+                    3) return 3 ;;
+                esac
             fi
         elif $has_app_source && [[ ! -d "$app_dir" ]]; then
             # Will clone — defer port detection
@@ -1738,8 +2014,13 @@ cmd_deploy() {
         elif $YES; then
             port=5000
         else
-            prompt "App port" "5000"
-            read -r port
+            tui_read port "App port" "5000" false || {
+                case $? in
+                    2) return 0 ;;
+                    3) return 3 ;;
+                    *) return 1 ;;
+                esac
+            }
             port="${port:-5000}"
         fi
     fi
@@ -1747,7 +2028,7 @@ cmd_deploy() {
     # Validate port (skip if deferred)
     if ! $port_deferred; then
         if ! [[ "$port" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
-            error "Invalid port '$port'."
+            error "Invalid port '$port'. Must be between 1 and 65535."
             return 1
         fi
     fi
@@ -1758,23 +2039,28 @@ cmd_deploy() {
         runtime=$(ferry_detect_runtime_from_dir "$app_dir")
     fi
 
-    # --- Memory resolution ---
-    if ! $memory_explicit; then
+    # --- Memory ---
+    if [[ -z "$memory" ]]; then
         if $YES; then
             memory=256
         else
             local mem_hint=""
             [[ "$runtime" == "node" ]] && mem_hint=" (512+ recommended for Node)"
-            prompt "Memory limit in MB${mem_hint}" "256"
-            read -r memory
+            tui_read memory "Container memory limit in MB${mem_hint}" "256" false || {
+                case $? in
+                    2) return 0 ;;
+                    3) return 3 ;;
+                    *) return 1 ;;
+                esac
+            }
             memory="${memory:-256}"
         fi
     fi
+
     if ! [[ "$memory" =~ ^[0-9]+$ ]] || ((memory < 64)); then
-        error "Invalid memory '$memory' — must be integer ≥ 64."
+        error "Invalid memory '$memory'. Must be integer ≥ 64."
         return 1
     fi
-
     # Root domain check
     local is_root=false
     local dot_count
@@ -1853,10 +2139,18 @@ cmd_deploy() {
     dim "    ${step_verify}. Verify setup"
     echo ""
 
-    if ! confirm "Proceed with deploy?"; then
-        info "Cancelled."
-        return 0
+    local deploy_choice=0
+    if confirm "Proceed with deploy?"; then
+        deploy_choice=0
+    else
+        deploy_choice=$?
     fi
+    case "$deploy_choice" in
+        0) ;;
+        2) info "Cancelled."; return 0 ;;
+        3) return 3 ;;
+        *) info "Cancelled."; return 0 ;;
+    esac
 
     echo ""
     local failed=0
@@ -1870,8 +2164,14 @@ cmd_deploy() {
             warn "No API token — using zone cert fallback (${_cert_zone} subdomains only)"
         else
             # No cert fallback available — require API auth
-            if ! cf_require_auth "Deploying to ${hostname}"; then
-                return 1
+            if cf_require_auth "Deploying to ${hostname}"; then
+                :
+            else
+                case $? in
+                    2) return 0 ;;
+                    3) return 3 ;;
+                    *) return 1 ;;
+                esac
             fi
         fi
     fi
@@ -1992,9 +2292,18 @@ cmd_deploy() {
         success "DNS CNAME created (or already exists)"
     else
         error "DNS creation failed (exit code $dns_exit): $dns_output"
-        if ! confirm "Continue deploy anyway?"; then
-            return 1
+        local dns_choice=0
+        if confirm "Continue deploy anyway?"; then
+            dns_choice=0
+        else
+            dns_choice=$?
         fi
+        case "$dns_choice" in
+            0) ;;
+            2) return 0 ;;
+            3) return 3 ;;
+            *) return 0 ;;
+        esac
     fi
 
     # === Step: Ingress ===
@@ -2139,7 +2448,15 @@ cmd_remove() {
     echo ""
 
     if [[ -z "$name" ]]; then
-        tui_select_app "Remove App" || { info "Cancelled."; return 0; }
+        if tui_select_app "Remove App"; then
+            :
+        else
+            case $? in
+                2) info "Cancelled."; return 0 ;;
+                3) return 3 ;;
+                *) info "Cancelled."; return 0 ;;
+            esac
+        fi
         name="$_TUI_APP_SELECTED"
     fi
 
@@ -2177,10 +2494,18 @@ cmd_remove() {
     fi
     echo ""
 
-    if ! confirm_name "$name"; then
-        info "Cancelled."
-        return 0
+    local confirm_choice=0
+    if confirm_name "$name"; then
+        confirm_choice=0
+    else
+        confirm_choice=$?
     fi
+    case "$confirm_choice" in
+        0) ;;
+        2) info "Cancelled."; return 0 ;;
+        3) return 3 ;;
+        *) info "Cancelled."; return 0 ;;
+    esac
 
     echo ""
 
@@ -2242,6 +2567,140 @@ cmd_remove() {
         "" \
         "  App '${name}' has been removed."
     echo ""
+}
+
+###############################################################################
+# Command: prune
+###############################################################################
+
+cmd_prune_reconcile() {
+    preflight
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -y|--yes) YES=true; shift ;;
+            -*)       error "Unknown flag: $1"; return 1 ;;
+            *)        shift ;;
+        esac
+    done
+
+    if [[ -z "$CF_API_TOKEN" ]]; then
+        error "Cloudflare API token required. Run 'ferry login' first."
+        return 1
+    fi
+
+    if ! cf_token_verify; then
+        error "Cloudflare API token is not valid."
+        return 1
+    fi
+
+    section_header "Prune: Reconcile Ingress"
+    echo ""
+    dim "Live check: fetching the current Cloudflare Tunnel ingress and Dokku domains."
+    echo ""
+
+    local all_domains ingress
+    all_domains=$(dokku_list_all_domains) || return 1
+    ingress=$(_tunnel_get_ingress) || return 1
+
+    declare -A live_domains=()
+    while IFS= read -r domain; do
+        [[ -n "$domain" ]] && live_domains["$domain"]=1
+    done <<< "$all_domains"
+
+    local -a orphan_rules=()
+    local prune_hosts=""
+    while IFS=$'\t' read -r hostname service; do
+        [[ -z "$hostname" || "$hostname" == "(catch-all)" ]] && continue
+        if [[ -z "${live_domains[$hostname]:-}" ]]; then
+            orphan_rules+=("$hostname"$'\t'"$service")
+            prune_hosts+="${hostname}"$'\n'
+        fi
+    done < <(printf '%s' "$ingress" | python3 -c "
+import json, sys
+rules = json.load(sys.stdin)
+for r in rules:
+    hostname = r.get('hostname') or '(catch-all)'
+    service = r.get('service') or '?'
+    print(f'{hostname}\t{service}')
+")
+
+    if (( ${#orphan_rules[@]} == 0 )); then
+        success "No orphan ingress rules found."
+        return 0
+    fi
+
+    box "${C_WARN}${C_BOLD}Orphan ingress rules found${C_RESET}" \
+        "" \
+        "  Ferry will remove ingress rules that no longer map to any live Dokku domain." \
+        ""
+    for rule in "${orphan_rules[@]}"; do
+        local rule_host rule_service
+        IFS=$'\t' read -r rule_host rule_service <<< "$rule"
+        printf '  %s- %s → %s%s\n' "$C_DIM" "$rule_host" "$rule_service" "$C_RESET"
+    done
+    echo ""
+
+    local confirm_choice=0
+    if confirm "Prune these orphan ingress rule(s) now?"; then
+        confirm_choice=0
+    else
+        confirm_choice=$?
+    fi
+    case "$confirm_choice" in
+        0) ;;
+        2) info "Cancelled."; return 0 ;;
+        3) return 3 ;;
+        *) info "Cancelled."; return 0 ;;
+    esac
+
+    echo ""
+    step "1/2" "Pruning orphan ingress rules..."
+    local prune_result
+    prune_result=$(yaml_prune_ingress "$prune_hosts" 2>&1) || {
+        error "Failed to update tunnel ingress: $prune_result"
+        return 1
+    }
+    success "Removed ${#orphan_rules[@]} orphan ingress rule(s)"
+
+    step "2/2" "Restarting cloudflared..."
+    cloudflared_restart || warn "cloudflared restart had issues"
+
+    local config_valid
+    config_valid=$(yaml_validate 2>&1)
+    if [[ "$config_valid" == ok* ]]; then
+        success "Config validation passed: $config_valid"
+    fi
+
+    echo ""
+    box "${C_SUCCESS}✓ Reconcile Complete${C_RESET}" \
+        "" \
+        "  Removed ${#orphan_rules[@]} orphan ingress rule(s)."
+    echo ""
+}
+
+cmd_prune() {
+    local subcommand="${1:-reconcile}"
+    if [[ $# -gt 0 ]]; then
+        shift
+    fi
+
+    case "$subcommand" in
+        reconcile|"")
+            cmd_prune_reconcile "$@"
+            ;;
+        -h|--help|help)
+            echo ""
+            section_header "Prune"
+            echo ""
+            echo -e "    ${C_WHITE}ferry prune reconcile${C_RESET}          ${C_DIM}Remove orphan ingress rules after a live check${C_RESET}"
+            echo ""
+            ;;
+        *)
+            error "Usage: ferry prune reconcile"
+            return 1
+            ;;
+    esac
 }
 
 ###############################################################################
@@ -2328,8 +2787,14 @@ cmd_tune() {
             error "App name required when using -y/--yes."
             return 1
         fi
-        if ! tui_select_app "Tune App" || [[ -z "$_TUI_APP_SELECTED" ]]; then
-            return 0
+        if tui_select_app "Tune App"; then
+            [[ -n "$_TUI_APP_SELECTED" ]] || return 0
+        else
+            case $? in
+                2) return 0 ;;
+                3) return 3 ;;
+                *) return 0 ;;
+            esac
         fi
         name="$_TUI_APP_SELECTED"
     fi
@@ -2371,8 +2836,13 @@ cmd_tune() {
         if $YES; then
             warn "Runtime unknown — skipping heap auto-tune. Pass --runtime node to enable."
         else
-            prompt "Runtime (node/python/go/ruby/rust/static, blank to skip heap tune)" ""
-            read -r runtime
+            tui_read runtime "Runtime (node/python/go/ruby/rust/static, blank to skip heap tune)" "" true || {
+                case $? in
+                    2) return 0 ;;
+                    3) return 3 ;;
+                    *) return 1 ;;
+                esac
+            }
         fi
     fi
 
@@ -2384,8 +2854,13 @@ cmd_tune() {
         else
             local hint=""
             [[ "$runtime" == "node" ]] && hint=" (512+ recommended for Node)"
-            prompt "New memory limit in MB${hint}" "$default_mem"
-            read -r memory
+            tui_read memory "New memory limit in MB${hint}" "$default_mem" false || {
+                case $? in
+                    2) return 0 ;;
+                    3) return 3 ;;
+                    *) return 1 ;;
+                esac
+            }
             memory="${memory:-$default_mem}"
         fi
     fi
@@ -2424,9 +2899,19 @@ cmd_tune() {
     dim "  Dokku storage mounts, persistent volumes, and database links are preserved."
     echo ""
 
-    if ! $YES && ! confirm "Apply these changes?"; then
-        info "Cancelled."
-        return 0
+    if ! $YES; then
+        local apply_choice=0
+        if confirm "Apply these changes?"; then
+            apply_choice=0
+        else
+            apply_choice=$?
+        fi
+        case "$apply_choice" in
+            0) ;;
+            2) info "Cancelled."; return 0 ;;
+            3) return 3 ;;
+            *) info "Cancelled."; return 0 ;;
+        esac
     fi
 
     echo ""
@@ -2647,8 +3132,13 @@ cmd_new() {
 
     # --- 1. App name ---
     if [[ -z "$name" ]]; then
-        prompt "App name (a-z, 0-9, hyphens)"
-        read -r name
+        tui_read name "App name (a-z, 0-9, hyphens)" "" false || {
+            case $? in
+                2) return 0 ;;
+                3) return 3 ;;
+                *) return 1 ;;
+            esac
+        }
     fi
 
     if ! [[ "$name" =~ ^[a-z][a-z0-9-]{0,28}[a-z0-9]$ ]]; then
@@ -2680,20 +3170,40 @@ cmd_new() {
             done
         done
 
-        tui_select "Category" "${cat_labels[@]}" || { echo ""; return 0; }
-        local selected_cat="${categories[$_TUI_SELECTED]}"
+        local selected_cat="" gen_idx=""
+        while true; do
+            if tui_select "Category" "${cat_labels[@]}"; then
+                selected_cat="${categories[$_TUI_SELECTED]}"
+            else
+                case $? in
+                    2) return 0 ;;
+                    3) return 3 ;;
+                    *) return 1 ;;
+                esac
+            fi
 
-        _build_category_options "$selected_cat"
-        tui_select "Framework" "${_CAT_OPTIONS[@]}" || { echo ""; return 0; }
-        local gen_idx="${_CAT_INDICES[$_TUI_SELECTED]}"
-        template="${_GEN_IDS[$gen_idx]}"
+            while true; do
+                _build_category_options "$selected_cat"
+                if tui_select "Framework" "${_CAT_OPTIONS[@]}"; then
+                    gen_idx="${_CAT_INDICES[$_TUI_SELECTED]}"
+                    template="${_GEN_IDS[$gen_idx]}"
+                    break 2
+                else
+                    case $? in
+                        2) break ;;
+                        3) return 3 ;;
+                        *) return 1 ;;
+                    esac
+                fi
+            done
+        done
     fi
 
     # Validate template
     if ! gen_index_by_id "$template"; then
         error "Unknown template '$template'."
         echo ""
-        cmd_new_list
+        cmd_new_list || true
         return 1
     fi
     local idx=$_GEN_IDX
@@ -2730,10 +3240,18 @@ cmd_new() {
         fi
         echo ""
 
-        if ! confirm "Proceed?"; then
-            dim "Cancelled."
-            return 0
+        local proceed_choice=0
+        if confirm "Proceed?"; then
+            proceed_choice=0
+        else
+            proceed_choice=$?
         fi
+        case "$proceed_choice" in
+            0) ;;
+            2) dim "Cancelled."; return 0 ;;
+            3) return 3 ;;
+            *) dim "Cancelled."; return 0 ;;
+        esac
     fi
 
     echo ""
@@ -2803,25 +3321,53 @@ cmd_new() {
         info "Chaining to deploy..."
         echo ""
         if $YES; then
-            cmd_deploy "$name" -d "$output_dir" -y
+            if cmd_deploy "$name" -d "$output_dir" -y; then
+                :
+            else
+                local chain_rc=$?
+                [[ $chain_rc -eq 3 ]] && return 3
+                return 1
+            fi
         else
-            cmd_deploy "$name" -d "$output_dir"
+            if cmd_deploy "$name" -d "$output_dir"; then
+                :
+            else
+                local chain_rc=$?
+                [[ $chain_rc -eq 3 ]] && return 3
+                return 1
+            fi
         fi
     elif [[ "$do_deploy" == "false" ]]; then
         dim "Next: ferry deploy $name"
         echo ""
     elif ! $YES && $_IS_TTY; then
         echo ""
+        local deploy_now_choice=0
         if confirm "Deploy '$name' now?"; then
-            echo ""
-            cmd_deploy "$name" -d "$output_dir"
+            deploy_now_choice=0
         else
+            deploy_now_choice=$?
+        fi
+        case "$deploy_now_choice" in
+            0)
+            echo ""
+            if cmd_deploy "$name" -d "$output_dir"; then
+                :
+            else
+                local deploy_chain_rc=$?
+                [[ $deploy_chain_rc -eq 3 ]] && return 3
+                return 1
+            fi
+            ;;
+            2)
             echo ""
             dim "Next steps:"
             echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}cd $output_dir${C_RESET}"
             echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy $name${C_RESET}"
             echo ""
-        fi
+            ;;
+            3) return 3 ;;
+        esac
     else
         echo ""
         dim "Next: ferry deploy $name"
@@ -2843,6 +3389,7 @@ cmd_help() {
     echo -e "    ${C_WHITE}ferry login${C_RESET} [-t <token>]               ${C_DIM}Set up Cloudflare API${C_RESET}"
     echo -e "    ${C_WHITE}ferry deploy${C_RESET} <name> [opts] [-y]        ${C_DIM}Deploy a new app${C_RESET}"
     echo -e "    ${C_WHITE}ferry remove${C_RESET} <name> [-y]               ${C_DIM}Remove an app${C_RESET}"
+    echo -e "    ${C_WHITE}ferry prune reconcile${C_RESET}                  ${C_DIM}Reconcile orphan ingress rules${C_RESET}"
     echo -e "    ${C_WHITE}ferry status${C_RESET}                           ${C_DIM}System dashboard${C_RESET}"
     echo -e "    ${C_WHITE}ferry list${C_RESET}                             ${C_DIM}Quick app list${C_RESET}"
     echo -e "    ${C_WHITE}ferry reload${C_RESET}                           ${C_DIM}Validate + restart cloudflared${C_RESET}"
@@ -2887,6 +3434,7 @@ cmd_help() {
     echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp -r owner/repo -H app.example.com -y${C_RESET}"
     echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp -d ./my-app -m 512 -y${C_RESET}"
     echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry deploy myapp -r owner/repo --no-push -y${C_RESET}"
+    echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry prune reconcile${C_RESET}"
     echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry tune myapp -m 512 --runtime node -y${C_RESET}"
     echo -e "    ${C_CHROME}\$${C_RESET} ${C_WHITE}ferry remove myapp -y${C_RESET}"
 
@@ -2937,9 +3485,19 @@ cmd_login() {
                 # -y without -t: keep existing valid token
                 info "Keeping current valid token."
                 return 0
-            elif ! confirm "Replace existing token?"; then
-                info "Keeping current token."
-                return 0
+            else
+                local replace_choice=0
+                if confirm "Replace existing token?"; then
+                    replace_choice=0
+                else
+                    replace_choice=$?
+                fi
+                case "$replace_choice" in
+                    0) ;;
+                    2) info "Keeping current token."; return 0 ;;
+                    3) return 3 ;;
+                    *) info "Keeping current token."; return 0 ;;
+                esac
             fi
         else
             warn "Current token is ${_cf_token_status}. Let's set up a new one."
@@ -2984,19 +3542,40 @@ cmd_login() {
         # Try to open browser
         if [[ -t 0 ]]; then
             if command -v xdg-open &>/dev/null; then
+                local browser_choice=0
                 if confirm "Open in browser?"; then
-                    xdg-open "$CF_TOKEN_URL" 2>/dev/null &
+                    browser_choice=0
+                else
+                    browser_choice=$?
                 fi
+                case "$browser_choice" in
+                    0) xdg-open "$CF_TOKEN_URL" 2>/dev/null & ;;
+                    2) ;;
+                    3) return 3 ;;
+                esac
             elif command -v open &>/dev/null; then
+                local browser_choice=0
                 if confirm "Open in browser?"; then
-                    open "$CF_TOKEN_URL" 2>/dev/null &
+                    browser_choice=0
+                else
+                    browser_choice=$?
                 fi
+                case "$browser_choice" in
+                    0) open "$CF_TOKEN_URL" 2>/dev/null & ;;
+                    2) ;;
+                    3) return 3 ;;
+                esac
             fi
         fi
 
         echo ""
-        prompt "API token"
-        read -r new_token
+        tui_read new_token "API token" "" false || {
+            case $? in
+                2) return 0 ;;
+                3) return 3 ;;
+                *) return 1 ;;
+            esac
+        }
     fi
 
     if [[ -z "$new_token" ]]; then
@@ -3074,7 +3653,13 @@ _TUI_SELECTED=0
 tui_select() {
     # Arrow-key interactive selector.
     # Usage: tui_select "title" "opt1|desc1" "opt2|desc2" ...
-    # Result stored in _TUI_SELECTED (0-based index). Returns 1 if quit.
+    # Result stored in _TUI_SELECTED (0-based index). Returns 2 for back, 3 for quit.
+    local allow_back=true
+    if [[ "${1:-}" == "--no-back" ]]; then
+        allow_back=false
+        shift
+    fi
+
     local title="$1"
     shift
     local options=("$@")
@@ -3097,7 +3682,7 @@ tui_select() {
             _TUI_SELECTED=$((choice - 1))
             return 0
         fi
-        return 1
+        return 2
     fi
 
     local selected=0
@@ -3108,6 +3693,12 @@ tui_select() {
 
     # Header
     section_header "$title"
+    echo ""
+    if $allow_back; then
+        echo -e "  ${C_DIM}↑/↓ or j/k move · Enter select · ←/Esc/b back · q quit${C_RESET}"
+    else
+        echo -e "  ${C_DIM}↑/↓ or j/k move · Enter select · q quit${C_RESET}"
+    fi
     echo ""
 
     # Draw function
@@ -3127,7 +3718,11 @@ tui_select() {
 
     while true; do
         local key
-        IFS= read -rsn1 key
+        IFS= read -rsn1 key || {
+            tput cnorm 2>/dev/null || true
+            echo ""
+            return 2
+        }
 
         case "$key" in
             $'\x1b')
@@ -3136,7 +3731,21 @@ tui_select() {
                 case "$seq" in
                     '[A') ((selected > 0)) && ((selected--)) || true ;;
                     '[B') ((selected < count - 1)) && ((selected++)) || true ;;
+                    '[D')
+                        if $allow_back; then
+                            tput cnorm 2>/dev/null || true
+                            echo ""
+                            return 2
+                        fi
+                        ;;
                 esac
+                ;;
+            $'\x7f'|b|B)
+                if $allow_back; then
+                    tput cnorm 2>/dev/null || true
+                    echo ""
+                    return 2
+                fi
                 ;;
             k) ((selected > 0)) && ((selected--)) || true ;;
             j) ((selected < count - 1)) && ((selected++)) || true ;;
@@ -3148,8 +3757,8 @@ tui_select() {
                 ;;
             q)
                 tput cnorm 2>/dev/null || true
-                _TUI_SELECTED=255
-                return 1
+                echo ""
+                return 3
                 ;;
         esac
 
@@ -3180,9 +3789,8 @@ tui_select_app() {
 
     if [[ ${#apps[@]} -eq 0 ]]; then
         # No apps found — fall back to manual entry
-        echo -en "  App name: "
-        read -r _TUI_APP_SELECTED
-        return 0
+        tui_read _TUI_APP_SELECTED "App name" "" false
+        return $?
     fi
 
     local options=()
@@ -3192,12 +3800,22 @@ tui_select_app() {
     done
     options+=("Enter manually...")
 
-    tui_select "$title" "${options[@]}" || return 1
+    local select_rc=0
+    if tui_select "$title" "${options[@]}"; then
+        select_rc=0
+    else
+        select_rc=$?
+    fi
+    case "$select_rc" in
+        0) ;;
+        2|3) return "$select_rc" ;;
+        *) return 2 ;;
+    esac
 
     if (( _TUI_SELECTED == ${#apps[@]} )); then
         # "Enter manually..." was selected
-        echo -en "  App name: "
-        read -r _TUI_APP_SELECTED
+        tui_read _TUI_APP_SELECTED "App name" "" false
+        return $?
     else
         _TUI_APP_SELECTED="${apps[$_TUI_SELECTED]}"
     fi
@@ -3210,39 +3828,166 @@ tui_select_app() {
 
 interactive_menu() {
     while true; do
-        tui_select "Ferry" \
+        local menu_rc=0
+        if tui_select --no-back "Ferry" \
             "Status       System dashboard" \
             "List         Quick app list" \
             "New          Create app from template" \
             "Deploy       Deploy a new app" \
             "Remove       Remove an app" \
+            "Prune        Reconcile orphan ingress" \
             "Reload       Validate + restart cloudflared" \
             "Rebuild      Rebuild a Dokku app" \
             "Tune         Adjust memory limits + Node heap" \
             "Logs         Tail app logs" \
             "Help         Usage information" \
             "Login        Cloudflare API setup" \
-            "Quit" || true
+            "Quit"; then
+            menu_rc=0
+        else
+            menu_rc=$?
+        fi
+
+        case "$menu_rc" in
+            2) continue ;;
+            3) echo ""; dim "Bye!"; return 0 ;;
+        esac
 
         case "$_TUI_SELECTED" in
-            0) cmd_status || warn "Status check failed." ;;
-            1) cmd_list || warn "List failed." ;;
-            2) cmd_new || warn "New app creation failed." ;;
-            3) cmd_deploy || warn "Deploy failed — you can try again." ;;
-            4) cmd_remove || warn "Remove failed — you can try again." ;;
-            5) cmd_reload || warn "Reload failed — you can try again." ;;
+            0)
+                if cmd_status; then
+                    :
+                else
+                    case $? in
+                        3) return 0 ;;
+                        *) warn "Status check failed." ;;
+                    esac
+                fi
+                ;;
+            1)
+                if cmd_list; then
+                    :
+                else
+                    case $? in
+                        3) return 0 ;;
+                        *) warn "List failed." ;;
+                    esac
+                fi
+                ;;
+            2)
+                if cmd_new; then
+                    :
+                else
+                    case $? in
+                        3) return 0 ;;
+                        *) warn "New app creation failed." ;;
+                    esac
+                fi
+                ;;
+            3)
+                if cmd_deploy; then
+                    :
+                else
+                    case $? in
+                        3) return 0 ;;
+                        *) warn "Deploy failed — you can try again." ;;
+                    esac
+                fi
+                ;;
+            4)
+                if cmd_remove; then
+                    :
+                else
+                    case $? in
+                        3) return 0 ;;
+                        *) warn "Remove failed — you can try again." ;;
+                    esac
+                fi
+                ;;
+            5)
+                if cmd_prune; then
+                    :
+                else
+                    case $? in
+                        3) return 0 ;;
+                        *) warn "Prune failed — you can try again." ;;
+                    esac
+                fi
+                ;;
             6)
-                tui_select_app "Rebuild App" && [[ -n "$_TUI_APP_SELECTED" ]] \
-                    && cmd_rebuild "$_TUI_APP_SELECTED" || warn "Rebuild failed."
+                if cmd_reload; then
+                    :
+                else
+                    case $? in
+                        3) return 0 ;;
+                        *) warn "Reload failed — you can try again." ;;
+                    esac
+                fi
                 ;;
-            7) cmd_tune || warn "Tune failed — you can try again." ;;
+            7)
+                if tui_select_app "Rebuild App"; then
+                    if [[ -n "$_TUI_APP_SELECTED" ]]; then
+                        if cmd_rebuild "$_TUI_APP_SELECTED"; then
+                            :
+                        else
+                            case $? in
+                                3) return 0 ;;
+                                *) warn "Rebuild failed." ;;
+                            esac
+                        fi
+                    else
+                        warn "Rebuild failed."
+                    fi
+                else
+                    case $? in
+                        2) continue ;;
+                        3) echo ""; dim "Bye!"; return 0 ;;
+                    esac
+                fi
+                ;;
             8)
-                tui_select_app "Tail Logs" && [[ -n "$_TUI_APP_SELECTED" ]] \
-                    && cmd_logs "$_TUI_APP_SELECTED" || warn "Logs failed."
+                if cmd_tune; then
+                    :
+                else
+                    case $? in
+                        3) return 0 ;;
+                        *) warn "Tune failed — you can try again." ;;
+                    esac
+                fi
                 ;;
-            9) cmd_help ;;
-            10) cmd_login || warn "Login failed — you can try again." ;;
-            11|255) echo ""; dim "Bye!"; exit 0 ;;
+            9)
+                if tui_select_app "Tail Logs"; then
+                    if [[ -n "$_TUI_APP_SELECTED" ]]; then
+                        if cmd_logs "$_TUI_APP_SELECTED"; then
+                            :
+                        else
+                            case $? in
+                                3) return 0 ;;
+                                *) warn "Logs failed." ;;
+                            esac
+                        fi
+                    else
+                        warn "Logs failed."
+                    fi
+                else
+                    case $? in
+                        2) continue ;;
+                        3) echo ""; dim "Bye!"; return 0 ;;
+                    esac
+                fi
+                ;;
+            10) if cmd_help; then :; else :; fi ;;
+            11)
+                if cmd_login; then
+                    :
+                else
+                    case $? in
+                        3) return 0 ;;
+                        *) warn "Login failed — you can try again." ;;
+                    esac
+                fi
+                ;;
+            12) echo ""; dim "Bye!"; return 0 ;;
         esac
     done
 }
@@ -3282,6 +4027,7 @@ main() {
 
     local command=""
     local args=()
+    local rc=0
 
     # Parse global flags and collect remaining args
     while [[ $# -gt 0 ]]; do
@@ -3298,24 +4044,56 @@ main() {
     fi
 
     case "$command" in
-        new)     cmd_new "${args[@]+"${args[@]}"}" ;;
-        login)   cmd_login "${args[@]+"${args[@]}"}" ;;
-        deploy)  cmd_deploy "${args[@]+"${args[@]}"}" ;;
-        remove)  cmd_remove "${args[@]+"${args[@]}"}" ;;
-        status)  cmd_status ;;
-        list)    cmd_list ;;
-        reload)  cmd_reload ;;
-        rebuild) cmd_rebuild "${args[@]+"${args[@]}"}" ;;
-        tune)    cmd_tune "${args[@]+"${args[@]}"}" ;;
-        logs)    cmd_logs "${args[@]+"${args[@]}"}" ;;
-        help|-h|--help) cmd_help ;;
-        "")      interactive_menu ;;
+        new)
+            if cmd_new "${args[@]+"${args[@]}"}"; then rc=0; else rc=$?; fi
+            ;;
+        login)
+            if cmd_login "${args[@]+"${args[@]}"}"; then rc=0; else rc=$?; fi
+            ;;
+        deploy)
+            if cmd_deploy "${args[@]+"${args[@]}"}"; then rc=0; else rc=$?; fi
+            ;;
+        remove)
+            if cmd_remove "${args[@]+"${args[@]}"}"; then rc=0; else rc=$?; fi
+            ;;
+        prune)
+            if cmd_prune "${args[@]+"${args[@]}"}"; then rc=0; else rc=$?; fi
+            ;;
+        status)
+            if cmd_status; then rc=0; else rc=$?; fi
+            ;;
+        list)
+            if cmd_list; then rc=0; else rc=$?; fi
+            ;;
+        reload)
+            if cmd_reload; then rc=0; else rc=$?; fi
+            ;;
+        rebuild)
+            if cmd_rebuild "${args[@]+"${args[@]}"}"; then rc=0; else rc=$?; fi
+            ;;
+        tune)
+            if cmd_tune "${args[@]+"${args[@]}"}"; then rc=0; else rc=$?; fi
+            ;;
+        logs)
+            if cmd_logs "${args[@]+"${args[@]}"}"; then rc=0; else rc=$?; fi
+            ;;
+        help|-h|--help)
+            if cmd_help; then rc=0; else rc=$?; fi
+            ;;
+        "")
+            if interactive_menu; then rc=0; else rc=$?; fi
+            ;;
         *)
             error "Unknown command: $command"
             cmd_help
-            exit 1
+            rc=1
             ;;
     esac
+
+    if (( rc == 3 )); then
+        exit 0
+    fi
+    return "$rc"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

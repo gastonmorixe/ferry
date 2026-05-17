@@ -1,83 +1,117 @@
 require "socket"
+require "json"
+require "cgi"
+require "erb"
+require "csv"
+require "net/http"
+require "uri"
+require "fileutils"
+require "thread"
+require "time"
 
 class InfoController < ApplicationController
   APP_NAME      = "{{APP_NAME}}"
   APP_PORT      = {{APP_PORT}}
   FERRY_VERSION = "{{FERRY_VERSION}}"
+  START_TIME    = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+  # ── Cloudflare Datacenter Map ─────────────────────────────────────────────
+
+  CF_DC = {
+    "ATL" => "Atlanta", "IAD" => "Ashburn", "BOS" => "Boston", "ORD" => "Chicago",
+    "DFW" => "Dallas", "DEN" => "Denver", "IAH" => "Houston", "MCI" => "Kansas City",
+    "LAX" => "Los Angeles", "MIA" => "Miami", "MSP" => "Minneapolis", "BNA" => "Nashville",
+    "EWR" => "Newark", "JFK" => "New York", "PHL" => "Philadelphia", "PHX" => "Phoenix",
+    "PDX" => "Portland", "SJC" => "San Jose", "SEA" => "Seattle", "SLC" => "Salt Lake City",
+    "TPA" => "Tampa", "YYZ" => "Toronto", "YUL" => "Montreal", "YVR" => "Vancouver",
+    "GRU" => "São Paulo", "GIG" => "Rio de Janeiro", "EZE" => "Buenos Aires",
+    "SCL" => "Santiago", "BOG" => "Bogotá", "LIM" => "Lima", "MEX" => "Mexico City",
+    "PTY" => "Panama City", "UIO" => "Quito", "MVD" => "Montevideo", "CUR" => "Curaçao",
+    "GUA" => "Guatemala City", "SJO" => "San José", "MDE" => "Medellín",
+    "AMS" => "Amsterdam", "ATH" => "Athens", "BCN" => "Barcelona", "TXL" => "Berlin",
+    "BRU" => "Brussels", "OTP" => "Bucharest", "BUD" => "Budapest", "KIV" => "Chișinău",
+    "CPH" => "Copenhagen", "DUB" => "Dublin", "DUS" => "Düsseldorf", "EDI" => "Edinburgh",
+    "FRA" => "Frankfurt", "HAM" => "Hamburg", "HEL" => "Helsinki", "IST" => "Istanbul",
+    "LIS" => "Lisbon", "LHR" => "London", "MAD" => "Madrid", "MRS" => "Marseille",
+    "MXP" => "Milan", "MUC" => "Munich", "OSL" => "Oslo", "CDG" => "Paris",
+    "PRG" => "Prague", "FCO" => "Rome", "LED" => "St Petersburg", "SOF" => "Sofia",
+    "ARN" => "Stockholm", "VIE" => "Vienna", "WAW" => "Warsaw", "ZAG" => "Zagreb",
+    "ZRH" => "Zurich",
+    "BLR" => "Bangalore", "BKK" => "Bangkok", "PEK" => "Beijing", "MAA" => "Chennai",
+    "CKG" => "Chongqing", "HKG" => "Hong Kong", "HYD" => "Hyderabad", "CGK" => "Jakarta",
+    "KUL" => "Kuala Lumpur", "BOM" => "Mumbai", "CCU" => "Kolkata", "DEL" => "New Delhi",
+    "KIX" => "Osaka", "ICN" => "Seoul", "PVG" => "Shanghai", "SIN" => "Singapore",
+    "TPE" => "Taipei", "NRT" => "Tokyo", "SGN" => "Ho Chi Minh City",
+    "AKL" => "Auckland", "SYD" => "Sydney", "MEL" => "Melbourne", "PER" => "Perth",
+    "BNE" => "Brisbane",
+    "CPT" => "Cape Town", "JNB" => "Johannesburg", "LOS" => "Lagos", "NBO" => "Nairobi",
+    "MBA" => "Mombasa",
+    "AMM" => "Amman", "BAH" => "Bahrain", "DOH" => "Doha", "DXB" => "Dubai",
+    "KWI" => "Kuwait City", "RUH" => "Riyadh", "TLV" => "Tel Aviv", "MCT" => "Muscat",
+  }.freeze
+
+  # ── Geo Cache ─────────────────────────────────────────────────────────────
+
+  GEO_TTL      = 5 * 60   # seconds
+  GEO_FAIL_TTL = 60       # seconds
+  IPDB_COUNTRY_URL  = ENV["IPDB_COUNTRY_URL"] || "https://raw.githubusercontent.com/sapics/ip-location-db/main/geo-whois-asn-country/geo-whois-asn-country-ipv4-num.csv"
+  IPDB_ASN_URL      = ENV["IPDB_ASN_URL"] || "https://raw.githubusercontent.com/sapics/ip-location-db/main/iptoasn-asn/iptoasn-asn-ipv4-num.csv"
+  IPDB_COMMIT_URL   = ENV["IPDB_COMMIT_URL"] || "https://api.github.com/repos/sapics/ip-location-db/commits/main"
+  IPDB_REFRESH_MS   = (ENV["IPDB_REFRESH_MS"] || (6 * 60 * 60 * 1000).to_s).to_i
+  IPDB_TIMEOUT_MS   = (ENV["IPDB_TIMEOUT_MS"] || "5000").to_i
+  COUNTRY_DB_PATH   = File.join(Dir.pwd, "data", "geo-whois-asn-country-ipv4-num.csv")
+  ASN_DB_PATH       = File.join(Dir.pwd, "data", "iptoasn-asn-ipv4-num.csv")
+  COUNTRY_META_PATH = File.join(Dir.pwd, "country-meta.min.json")
+  DATASET_SOURCE_PATH = File.join(Dir.pwd, "data", "ipdb-source.json")
+
+  CONTINENT_NAMES = {
+    "AF" => "Africa",
+    "AN" => "Antarctica",
+    "AS" => "Asia",
+    "EU" => "Europe",
+    "NA" => "North America",
+    "OC" => "Oceania",
+    "SA" => "South America",
+  }.freeze
+
+  HOSTING_ORG_PATTERNS = [
+    /cloudflare/i, /amazon/i, /aws/i, /google/i, /microsoft/i, /azure/i,
+    /digitalocean/i, /hetzner/i, /ovh/i, /linode/i, /oracle/i, /akamai/i,
+    /vultr/i, /fastly/i, /cdn/i, /hosting/i, /datacenter/i, /colo/i,
+  ].freeze
+
+  MOBILE_ORG_PATTERNS = [
+    /mobile/i, /wireless/i, /cell/i, /telecom/i, /telefonica/i, /vodafone/i,
+    /orange/i, /verizon/i, /airtel/i, /mtn/i, /telstra/i, /singtel/i,
+  ].freeze
+
+  @@geo_cache = {}
+  @@geo_mutex = Mutex.new
+  @@country_meta = nil
+  @@country_ranges = nil
+  @@asn_ranges = nil
+  @@datasets_ready = false
+  @@dataset_refresh_mutex = Mutex.new
+  @@dataset_refresh_started = false
+
+  # ── Actions ───────────────────────────────────────────────────────────────
 
   def index
-    @data = request_data
-    # renders app/views/info/index.html.erb
+    payload = build_payload
+    @p = payload
+    # rendered by app/views/info/index.html.erb
   end
 
   def show_json
-    render json: request_data
+    render json: build_payload
   end
 
   def show_xml
-    d   = request_data
-    req = d[:request]
-    srv = d[:server]
-
-    header_xml = req[:headers].map do |k, v|
-      "    <header><name>#{CGI.escapeHTML(k)}</name><value>#{CGI.escapeHTML(v.to_s)}</value></header>"
-    end.join("\n")
-
-    xml = <<~XML
-      <?xml version="1.0" encoding="UTF-8"?>
-      <response>
-        <app>#{CGI.escapeHTML(d[:app])}</app>
-        <ferry>⛵ Ferry v#{FERRY_VERSION}</ferry>
-        <timestamp>#{d[:timestamp]}</timestamp>
-        <server>
-          <hostname>#{CGI.escapeHTML(srv[:hostname])}</hostname>
-          <port>#{srv[:port]}</port>
-        </server>
-        <request>
-          <method>#{req[:method]}</method>
-          <url>#{CGI.escapeHTML(req[:url])}</url>
-          <protocol>#{req[:protocol]}</protocol>
-          <ip>#{CGI.escapeHTML(req[:ip])}</ip>
-          <headers>
-      #{header_xml}
-          </headers>
-        </request>
-      </response>
-    XML
-
-    render plain: xml, content_type: "application/xml"
+    render plain: build_xml(build_payload), content_type: "application/xml; charset=utf-8"
   end
 
   def show_text
-    d   = request_data
-    req = d[:request]
-    srv = d[:server]
-
-    header_lines = req[:headers].map { |k, v| "  #{k}: #{v}" }.join("\n")
-
-    text = <<~TEXT
-      # #{d[:app]}
-
-      ## Request
-      - Method:   #{req[:method]}
-      - URL:      #{req[:url]}
-      - Protocol: #{req[:protocol]}
-      - IP:       #{req[:ip]}
-
-      ## Headers
-      #{header_lines}
-
-      ## Server
-      - Hostname:  #{srv[:hostname]}
-      - Port:      #{srv[:port]}
-      - Timestamp: #{d[:timestamp]}
-
-      ---
-      Built with ⛵ Ferry v#{FERRY_VERSION}
-      https://github.com/gastonmorixe/ferry
-    TEXT
-
-    render plain: text, content_type: "text/plain; charset=utf-8"
+    render plain: build_text(build_payload), content_type: "text/plain; charset=utf-8"
   end
 
   def health
@@ -86,32 +120,765 @@ class InfoController < ApplicationController
 
   private
 
-  def request_data
-    headers = {}
-    request.headers.each do |k, v|
-      next unless k.start_with?("HTTP_") || k.in?(%w[CONTENT_TYPE CONTENT_LENGTH])
-      name = k.start_with?("HTTP_") ? k[5..].split("_").map(&:capitalize).join("-") : k.split("_").map(&:capitalize).join("-")
-      headers[name] = v.to_s
+  # ── IP Extraction ─────────────────────────────────────────────────────────
+
+  def client_ip
+    request.headers["CF-Connecting-IP"].presence ||
+      request.headers["True-Client-IP"].presence ||
+      request.headers["X-Real-IP"].presence ||
+      request.headers["X-Forwarded-For"]&.split(",")&.first&.strip.presence ||
+      request.remote_ip.to_s
+  end
+
+  def ip_version(ip)
+    ip.include?(":") ? "IPv6" : "IPv4"
+  end
+
+  def private_ip?(ip)
+    return true if ip.nil? || ip.empty? || ip == "unknown" || ip == "::1" || ip == "127.0.0.1"
+    ip = ip.sub(/\A::ffff:/, "")
+    return true if ip.start_with?("10.") || ip.start_with?("192.168.")
+    if ip.start_with?("172.")
+      oct = ip.split(".")[1].to_i
+      return true if oct >= 16 && oct <= 31
+    end
+    return true if ip.start_with?("fc") || ip.start_with?("fd")
+    false
+  end
+
+  # ── Geo Lookup ────────────────────────────────────────────────────────────
+
+  def ensure_datasets_loaded!
+    return if @@datasets_ready
+    raise "Missing local IP datasets under ./data" unless File.exist?(COUNTRY_DB_PATH) && File.exist?(ASN_DB_PATH)
+    load_country_ranges
+    load_asn_ranges
+    @@datasets_ready = true
+  end
+
+  def load_country_meta
+    @@country_meta ||= JSON.parse(File.read(COUNTRY_META_PATH))
+  end
+
+  def load_country_ranges
+    @@country_ranges ||= begin
+      rows = []
+      File.foreach(COUNTRY_DB_PATH) do |line|
+        start_ip, end_ip, country_code = line.chomp.split(",", 3)
+        next unless start_ip
+        rows << { start: start_ip.to_i, end: end_ip.to_i, country_code: country_code }
+      end
+      rows
+    end
+  end
+
+  def load_asn_ranges
+    @@asn_ranges ||= begin
+      rows = []
+      File.foreach(ASN_DB_PATH) do |line|
+        start_ip, end_ip, asn, org = line.chomp.split(",", 4)
+        next unless start_ip
+        org = org.to_s.sub(/\A"(.*)"\z/, '\1')
+        rows << { start: start_ip.to_i, end: end_ip.to_i, asn: asn, org: org }
+      end
+      rows
+    end
+  end
+
+  def fetch_url_text(url)
+    uri = URI.parse(url)
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = uri.scheme == "https"
+    http.open_timeout = IPDB_TIMEOUT_MS / 1000.0
+    http.read_timeout = IPDB_TIMEOUT_MS / 1000.0
+
+    req = Net::HTTP::Get.new(uri.request_uri)
+    req["User-Agent"] = "#{APP_NAME}/ferry-ipdb-updater"
+    req["Accept"] = "application/json, text/plain, */*"
+
+    res = http.request(req)
+    raise "HTTP #{res.code}" unless res.is_a?(Net::HTTPSuccess)
+    res.body.to_s
+  end
+
+  def fetch_latest_commit_sha
+    payload = JSON.parse(fetch_url_text(IPDB_COMMIT_URL))
+    payload["sha"]
+  rescue StandardError
+    nil
+  end
+
+  def current_dataset_sha
+    payload = JSON.parse(File.read(DATASET_SOURCE_PATH))
+    payload["commit"] || payload["sha"]
+  rescue StandardError
+    nil
+  end
+
+  def write_dataset_source(sha)
+    FileUtils.mkdir_p(File.dirname(DATASET_SOURCE_PATH))
+    File.write(DATASET_SOURCE_PATH, JSON.pretty_generate(
+      repo: "https://github.com/sapics/ip-location-db",
+      commit: sha,
+      generatedAt: Time.now.utc.iso8601,
+      countryDataset: "geo-whois-asn-country",
+      asnDataset: "iptoasn-asn",
+    ))
+  end
+
+  def refresh_datasets_if_needed!(force = false)
+    @@dataset_refresh_mutex.synchronize do
+      ensure_datasets_loaded! unless force
+
+      current_sha = current_dataset_sha
+      latest_sha = fetch_latest_commit_sha
+      return if latest_sha.nil? || latest_sha == current_sha
+
+      country_csv = fetch_url_text(IPDB_COUNTRY_URL)
+      asn_csv = fetch_url_text(IPDB_ASN_URL)
+
+      FileUtils.mkdir_p(File.dirname(COUNTRY_DB_PATH))
+      File.write("#{COUNTRY_DB_PATH}.tmp", country_csv)
+      File.write("#{ASN_DB_PATH}.tmp", asn_csv)
+      File.rename("#{COUNTRY_DB_PATH}.tmp", COUNTRY_DB_PATH)
+      File.rename("#{ASN_DB_PATH}.tmp", ASN_DB_PATH)
+      write_dataset_source(latest_sha)
+
+      @@country_meta = nil
+      @@country_ranges = nil
+      @@asn_ranges = nil
+      @@datasets_ready = false
+      @@geo_cache = {}
+      ensure_datasets_loaded!
+    end
+  end
+
+  def self.start_dataset_refresh_thread!
+    return if @@dataset_refresh_started
+    @@dataset_refresh_started = true
+
+    # Pre-parse the local IP datasets (~27 MB CSV) at boot so the first
+    # request doesn't pay the cost and time out. Safe — reads local files only.
+    begin
+      new.send(:ensure_datasets_loaded!)
+    rescue StandardError => e
+      warn("initial dataset load failed: #{e.message}")
     end
 
-    ip = request.env["HTTP_X_FORWARDED_FOR"]&.split(",")&.first&.strip ||
-         request.remote_ip.to_s
+    Thread.new do
+      refresher = new
+      loop do
+        begin
+          refresher.send(:refresh_datasets_if_needed!)
+        rescue StandardError => e
+          warn("dataset refresh failed: #{e.message}")
+        end
+        sleep(IPDB_REFRESH_MS / 1000.0)
+      end
+    end
+  end
 
+  def ipv4_to_number(ip)
+    normalized = ip.to_s.sub(/\A::ffff:/, "")
+    return nil unless normalized.match?(/\A\d+\.\d+\.\d+\.\d+\z/)
+    parts = normalized.split(".").map(&:to_i)
+    return nil if parts.length != 4 || parts.any? { |part| part.negative? || part > 255 }
+    (((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256 + parts[3]) & 0xFFFFFFFF
+  end
+
+  def search_range(ranges, value)
+    low = 0
+    high = ranges.length - 1
+    while low <= high
+      mid = (low + high) / 2
+      row = ranges[mid]
+      if value < row[:start]
+        high = mid - 1
+      elsif value > row[:end]
+        low = mid + 1
+      else
+        return row
+      end
+    end
+    nil
+  end
+
+  def country_meta_for(code)
+    return nil if code.blank?
+    meta = load_country_meta[code] || {}
+    continent_code = meta["continent"].to_s
     {
-      app:       APP_NAME,
-      ferry:     "⛵ Ferry v#{FERRY_VERSION}",
-      timestamp: Time.now.utc.iso8601,
-      server: {
-        hostname: Socket.gethostname,
-        port:     APP_PORT,
-      },
-      request: {
-        method:   request.method,
-        url:      request.original_url,
-        protocol: request.env["SERVER_PROTOCOL"] || "HTTP/1.1",
-        ip:       ip,
-        headers:  headers,
-      },
+      continent: CONTINENT_NAMES[continent_code] || continent_code,
+      continent_code: continent_code,
+      country: meta["name"].presence || code,
+      currency: meta["currency"].to_s,
     }
   end
+
+  def hosting_org?(org)
+    HOSTING_ORG_PATTERNS.any? { |pattern| org.to_s.match?(pattern) }
+  end
+
+  def mobile_org?(org)
+    MOBILE_ORG_PATTERNS.any? { |pattern| org.to_s.match?(pattern) }
+  end
+
+  def lookup_hostname(ip)
+    return nil if private_ip?(ip)
+    Socket.getnameinfo([ip.sub(/\A::ffff:/, ""), 0], Socket::NI_NAMEREQD).first
+  rescue StandardError
+    nil
+  end
+
+  def lookup_geo(ip, fallback_country = nil)
+    cache_key = "#{ip}:#{fallback_country}"
+    now = Time.now.to_f
+    @@geo_mutex.synchronize do
+      cached = @@geo_cache[cache_key]
+      return cached[:data] if cached && cached[:exp] > now
+    end
+
+    data = nil
+    begin
+      ensure_datasets_loaded!
+      ip_num = ipv4_to_number(ip)
+      country_row = ip_num ? search_range(load_country_ranges, ip_num) : nil
+      asn_row = ip_num ? search_range(load_asn_ranges, ip_num) : nil
+      country_code = country_row&.dig(:country_code).presence || fallback_country.to_s
+      meta = country_meta_for(country_code)
+      org = asn_row&.dig(:org).to_s
+      asn = asn_row&.dig(:asn).to_s
+
+      if country_code.present? || asn_row
+        data = {
+          continent: meta&.dig(:continent).to_s,
+          continentCode: meta&.dig(:continent_code).to_s,
+          country: meta&.dig(:country).presence || country_code,
+          countryCode: country_code,
+          region: "",
+          regionName: "",
+          city: "",
+          district: "",
+          zip: "",
+          lat: 0,
+          lon: 0,
+          timezone: "",
+          offset: 0,
+          currency: meta&.dig(:currency).to_s,
+          isp: org,
+          org: org,
+          as: asn.present? ? "AS#{asn}" : "",
+          asname: org,
+          reverse: lookup_hostname(ip).to_s,
+          mobile: mobile_org?(org),
+          proxy: false,
+          hosting: hosting_org?(org),
+          query: ip,
+        }
+      end
+    rescue StandardError
+      data = nil
+    end
+
+    ttl = data ? GEO_TTL : GEO_FAIL_TTL
+    @@geo_mutex.synchronize do
+      @@geo_cache[cache_key] = { data: data, exp: Time.now.to_f + ttl }
+    end
+    data
+  end
+
+  # ── User-Agent Parser ────────────────────────────────────────────────────
+
+  def parse_ua(raw)
+    info = { raw: raw.to_s, browser: "Unknown", browser_version: "", os: "Unknown", os_version: "", device: "Unknown", engine: "Unknown" }
+    return info if raw.nil? || raw.empty?
+
+    # Browser
+    browsers = [
+      [/Edg(?:e|A|iOS)?\/(\S+)/i, "Edge"],
+      [/OPR\/(\S+)/i, "Opera"],
+      [/Vivaldi\/(\S+)/i, "Vivaldi"],
+      [/Brave\/(\S+)/i, "Brave"],
+      [/Firefox\/(\S+)/i, "Firefox"],
+      [/SamsungBrowser\/(\S+)/i, "Samsung Internet"],
+      [/UCBrowser\/(\S+)/i, "UC Browser"],
+      [/Chrome\/(\S+)/i, "Chrome"],
+      [/Version\/(\S+).*Safari/i, "Safari"],
+      [/curl\/(\S+)/i, "curl"],
+      [/Wget\/(\S+)/i, "Wget"],
+      [/HTTPie\/(\S+)/i, "HTTPie"],
+      [/Claude-User/i, "Claude"],
+    ]
+    browsers.each do |re, name|
+      m = raw.match(re)
+      if m
+        info[:browser] = name
+        info[:browser_version] = m[1] || ""
+        break
+      end
+    end
+    if info[:browser] == "Unknown" && raw.match?(/bot|crawl|spider|slurp|feed|index/i)
+      info[:browser] = "Bot"
+    end
+
+    # Engine
+    if raw.match?(/Trident/i)
+      info[:engine] = "Trident"
+    elsif raw.match?(/Gecko\/\d/i) && !(raw.split("Gecko").first || "").match?(/like Gecko/i)
+      info[:engine] = "Gecko"
+    end
+    info[:engine] = "WebKit" if raw.match?(/AppleWebKit/i)
+    if %w[Chrome Edge Opera Vivaldi Brave].include?(info[:browser])
+      info[:engine] = "Blink"
+    end
+
+    # OS
+    if (m = raw.match(/Windows NT ([\d.]+)/i))
+      info[:os] = "Windows"
+      info[:os_version] = { "10.0" => "10+", "6.3" => "8.1", "6.2" => "8", "6.1" => "7", "6.0" => "Vista" }[m[1]] || m[1]
+    elsif (m = raw.match(/Mac OS X ([\d._]+)/i))
+      info[:os] = "macOS"
+      info[:os_version] = m[1].tr("_", ".")
+    elsif raw.match?(/CrOS/i)
+      info[:os] = "ChromeOS"
+    elsif (m = raw.match(/Android ([\d.]+)/i))
+      info[:os] = "Android"
+      info[:os_version] = m[1]
+    elsif (m = raw.match(/iPhone OS ([\d_]+)/i))
+      info[:os] = "iOS"
+      info[:os_version] = m[1].tr("_", ".")
+    elsif (m = raw.match(/iPad.*OS ([\d_]+)/i))
+      info[:os] = "iPadOS"
+      info[:os_version] = m[1].tr("_", ".")
+    elsif raw.match?(/Linux/i)
+      info[:os] = "Linux"
+    elsif raw.match?(/FreeBSD/i)
+      info[:os] = "FreeBSD"
+    end
+
+    # Device
+    if raw.match?(/Mobile|Android.*Mobile|iPhone|iPod/i)
+      info[:device] = "Mobile"
+    elsif raw.match?(/iPad|Android(?!.*Mobile)|Tablet/i)
+      info[:device] = "Tablet"
+    elsif raw.match?(/Smart-?TV|Tizen|Web0S|NetCast/i)
+      info[:device] = "Smart TV"
+    elsif raw.match?(/bot|crawl|spider/i)
+      info[:device] = "Bot"
+    elsif raw.match?(/curl|wget|httpie|python-requests|go-http|java\//i)
+      info[:device] = "CLI / Library"
+    else
+      info[:device] = "Desktop"
+    end
+
+    info
+  end
+
+  # ── Cloudflare ────────────────────────────────────────────────────────────
+
+  def cf_info
+    ray = request.headers["CF-Ray"]
+    return nil unless ray.present?
+
+    dc_code = nil
+    dc_city = nil
+    dash = ray.rindex("-")
+    if dash && dash > 0
+      dc_code = ray[(dash + 1)..]
+      dc_city = CF_DC[dc_code]
+    end
+
+    scheme = nil
+    begin
+      visitor = request.headers["CF-Visitor"]
+      scheme = JSON.parse(visitor)["scheme"] if visitor.present?
+    rescue StandardError
+    end
+
+    {
+      detected: true,
+      ray: dash && dash > 0 ? ray[0...dash] : ray,
+      datacenter: dc_code,
+      datacenter_city: dc_city,
+      country: request.headers["CF-IPCountry"].presence,
+      scheme: scheme,
+      warp: request.headers["CF-Warp-Tag-ID"].present?,
+    }
+  end
+
+  # ── Helpers ───────────────────────────────────────────────────────────────
+
+  def country_flag(code)
+    return "" if code.nil? || code.length != 2
+    code.upcase.chars.map { |c| (c.ord + 127397).chr(Encoding::UTF_8) }.join
+  end
+
+  def country_label(code)
+    return "" if code.blank?
+    meta = country_meta_for(code)
+    name = meta&.dig(:country).presence || code
+    "#{country_flag(code)} #{name}#{name != code ? " (#{code})" : ""}"
+  end
+
+  def parse_as(as_str)
+    m = as_str&.match(/^(AS\d+)\s*(.*)/)
+    m ? { asn: m[1], as_name: m[2] } : { asn: as_str.to_s, as_name: "" }
+  end
+
+  def format_uptime(seconds)
+    s = seconds.to_i
+    d = s / 86400
+    h = (s % 86400) / 3600
+    m = (s % 3600) / 60
+    sec = s % 60
+    return "#{d}d #{h}h #{m}m" if d > 0
+    return "#{h}h #{m}m #{sec}s" if h > 0
+    return "#{m}m #{sec}s" if m > 0
+    "#{sec}s"
+  end
+
+  def flat_headers
+    out = {}
+    request.headers.each do |k, v|
+      next unless k.start_with?("HTTP_") || %w[CONTENT_TYPE CONTENT_LENGTH].include?(k)
+      name = if k.start_with?("HTTP_")
+               k[5..].split("_").map(&:capitalize).join("-")
+             else
+               k.split("_").map(&:capitalize).join("-")
+             end
+      out[name] = v.to_s
+    end
+    out.sort.to_h
+  end
+
+  def server_uptime
+    Process.clock_gettime(Process::CLOCK_MONOTONIC) - START_TIME
+  end
+
+  def proxy_signal?(cf)
+    hop_count = request.headers["X-Forwarded-For"].to_s.split(",").map(&:strip).reject(&:empty?).length
+    request.headers["Via"].present? ||
+      request.headers["Proxy-Connection"].present? ||
+      request.headers["Forwarded"].present? ||
+      hop_count > 1 ||
+      cf&.dig(:warp)
+  end
+
+  def build_privacy(geo, ua, cf)
+    proxy = proxy_signal?(cf)
+    hosting = geo&.dig(:hosting) || false
+    mobile = geo&.dig(:mobile) || (ua[:device] == "Mobile" && mobile_org?(geo&.dig(:org).to_s))
+    return nil unless proxy || hosting || mobile
+    { proxy: proxy, hosting: hosting, mobile: mobile }
+  end
+
+  # ── Build Payload ─────────────────────────────────────────────────────────
+
+  def build_payload
+    ip = client_ip
+    cf = cf_info
+    geo = lookup_geo(ip, cf&.dig(:country))
+    ua = parse_ua(request.headers["User-Agent"])
+
+    langs = (request.headers["Accept-Language"] || "")
+      .split(",").map { |l| l.split(";").first.strip }.reject(&:empty?)
+
+    enc = (request.headers["Accept-Encoding"] || "")
+      .split(",").map(&:strip).reject(&:empty?)
+
+    dnt = request.headers["DNT"] == "1"
+    gpc = request.headers["Sec-GPC"] == "1"
+
+    uptime = server_uptime
+    as_info = geo&.dig(:as).present? ? parse_as(geo[:as]) : nil
+    privacy = build_privacy(geo, ua, cf)
+
+    {
+      app: APP_NAME,
+      ferry: "⛵ Ferry v#{FERRY_VERSION}",
+      timestamp: Time.now.utc.iso8601,
+      client: {
+        ip: ip,
+        ip_version: ip_version(ip),
+        hostname: geo&.dig(:reverse).presence,
+        geo: geo ? {
+          continent: geo[:continent],
+          continent_code: geo[:continentCode],
+          country: geo[:country],
+          country_code: geo[:countryCode],
+          flag: country_flag(geo[:countryCode]),
+          region: geo[:region],
+          region_name: geo[:regionName],
+          city: geo[:city],
+          district: geo[:district],
+          zip: geo[:zip],
+          lat: geo[:lat],
+          lon: geo[:lon],
+          timezone: geo[:timezone],
+          utc_offset: geo[:offset],
+          currency: geo[:currency],
+        } : nil,
+        network: as_info ? {
+          isp: geo[:isp],
+          org: geo[:org],
+          asn: as_info[:asn],
+          as_name: as_info[:as_name],
+        } : nil,
+        privacy: privacy,
+        user_agent: ua,
+        languages: langs,
+        encoding: enc,
+        dnt: dnt,
+        gpc: gpc,
+      },
+      cloudflare: cf,
+      request: {
+        method: request.method,
+        url: request.original_url,
+        protocol: cf&.dig(:scheme) || request.protocol.sub("://", ""),
+        host: request.host_with_port,
+      },
+      server: {
+        hostname: Socket.gethostname,
+        port: APP_PORT,
+        uptime: uptime.to_i,
+        uptime_human: format_uptime(uptime),
+        runtime: RUBY_DESCRIPTION,
+        platform: RUBY_PLATFORM,
+      },
+      headers: flat_headers,
+    }
+  end
+
+  # ── XML Renderer ──────────────────────────────────────────────────────────
+
+  def build_xml(p)
+    g  = p[:client][:geo]
+    n  = p[:client][:network]
+    pr = p[:client][:privacy]
+    cf = p[:cloudflare]
+    ua = p[:client][:user_agent]
+    hdrs = p[:headers].map { |k, v| "      <header name=\"#{xesc(k)}\">#{xesc(v)}</header>" }.join("\n")
+
+    langs_xml = p[:client][:languages].map { |l| "<lang>#{xesc(l)}</lang>" }.join
+    enc_xml   = p[:client][:encoding].map { |e| "<enc>#{xesc(e)}</enc>" }.join
+
+    xml = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <response>
+        <app>#{xesc(p[:app])}</app>
+        <ferry>#{xesc(p[:ferry])}</ferry>
+        <timestamp>#{xesc(p[:timestamp])}</timestamp>
+        <client>
+          #{xel("ip", p[:client][:ip])}
+          #{xel("ipVersion", p[:client][:ip_version])}
+          #{xel("hostname", p[:client][:hostname])}
+    XML
+
+    if g
+      xml += <<~XML
+            <geo>
+              #{xel("continent", g[:continent])}
+              #{xel("continentCode", g[:continent_code])}
+              #{xel("country", g[:country])}
+              #{xel("countryCode", g[:country_code])}
+              #{xel("flag", g[:flag])}
+              #{xel("regionName", g[:region_name])}
+              #{xel("city", g[:city])}
+              #{xel("district", g[:district])}
+              #{xel("zip", g[:zip])}
+              #{xel("lat", g[:lat])}
+              #{xel("lon", g[:lon])}
+              #{xel("timezone", g[:timezone])}
+              #{xel("utcOffset", g[:utc_offset])}
+              #{xel("currency", g[:currency])}
+            </geo>
+      XML
+    else
+      xml += "      <geo />\n"
+    end
+
+    if n
+      xml += <<~XML
+            <network>
+              #{xel("isp", n[:isp])}
+              #{xel("org", n[:org])}
+              #{xel("asn", n[:asn])}
+              #{xel("asName", n[:as_name])}
+            </network>
+      XML
+    else
+      xml += "      <network />\n"
+    end
+
+    if pr
+      xml += <<~XML
+            <privacy>
+              #{xel("proxy", pr[:proxy])}
+              #{xel("hosting", pr[:hosting])}
+              #{xel("mobile", pr[:mobile])}
+            </privacy>
+      XML
+    else
+      xml += "      <privacy />\n"
+    end
+
+    xml += <<~XML
+          <userAgent>
+            #{xel("raw", ua[:raw])}
+            #{xel("browser", ua[:browser])}
+            #{xel("browserVersion", ua[:browser_version])}
+            #{xel("os", ua[:os])}
+            #{xel("osVersion", ua[:os_version])}
+            #{xel("device", ua[:device])}
+            #{xel("engine", ua[:engine])}
+          </userAgent>
+          <languages>#{langs_xml}</languages>
+          <encoding>#{enc_xml}</encoding>
+          #{xel("dnt", p[:client][:dnt])}
+          #{xel("gpc", p[:client][:gpc])}
+        </client>
+    XML
+
+    if cf
+      xml += <<~XML
+          <cloudflare>
+            #{xel("detected", true)}
+            #{xel("ray", cf[:ray])}
+            #{xel("datacenter", cf[:datacenter])}
+            #{xel("datacenterCity", cf[:datacenter_city])}
+            #{xel("country", cf[:country])}
+            #{xel("scheme", cf[:scheme])}
+            #{xel("warp", cf[:warp])}
+          </cloudflare>
+      XML
+    else
+      xml += "    <cloudflare />\n"
+    end
+
+    xml += <<~XML
+        <request>
+          #{xel("method", p[:request][:method])}
+          #{xel("url", p[:request][:url])}
+          #{xel("protocol", p[:request][:protocol])}
+          #{xel("host", p[:request][:host])}
+        </request>
+        <server>
+          #{xel("hostname", p[:server][:hostname])}
+          #{xel("port", p[:server][:port])}
+          #{xel("uptime", p[:server][:uptime])}
+          #{xel("uptimeHuman", p[:server][:uptime_human])}
+          #{xel("runtime", p[:server][:runtime])}
+          #{xel("platform", p[:server][:platform])}
+        </server>
+        <headers>
+      #{hdrs}
+        </headers>
+      </response>
+    XML
+
+    xml
+  end
+
+  def xesc(s)
+    CGI.escapeHTML(s.to_s)
+  end
+
+  def xel(tag, val)
+    return "  <#{tag} />" if val.nil?
+    "  <#{tag}>#{xesc(val.to_s)}</#{tag}>"
+  end
+
+  # ── Text Renderer ─────────────────────────────────────────────────────────
+
+  def build_text(p)
+    g  = p[:client][:geo]
+    n  = p[:client][:network]
+    pr = p[:client][:privacy]
+    cf = p[:cloudflare]
+    ua = p[:client][:user_agent]
+
+    t = "# #{p[:app]}\n\n"
+    t += "Your IP: #{p[:client][:ip]}\n"
+    t += "Hostname: #{p[:client][:hostname]}\n" if p[:client][:hostname]
+    t += "IP Version: #{p[:client][:ip_version]}\n"
+
+    if g
+      t += "\n## Location\n"
+      t += "  Continent:   #{g[:continent]} (#{g[:continent_code]})\n" if g[:continent].present? || g[:continent_code].present?
+      t += "  Country:     #{g[:flag]} #{g[:country]} (#{g[:country_code]})\n"
+      t += "  Region:      #{g[:region_name]}\n" if g[:region_name].present?
+      t += "  City:        #{g[:city]}\n" if g[:city].present?
+      t += "  District:    #{g[:district]}\n" if g[:district].present?
+      t += "  Postal/ZIP:  #{g[:zip]}\n" if g[:zip].present?
+      t += "  Coordinates: #{g[:lat]}, #{g[:lon]}\n" if g[:lat].to_f.nonzero? || g[:lon].to_f.nonzero?
+      if g[:timezone].present?
+        offset_hr = g[:utc_offset].to_f / 3600
+        t += "  Timezone:    #{g[:timezone]} (UTC#{offset_hr >= 0 ? "+" : ""}#{offset_hr})\n"
+      end
+      t += "  Currency:    #{g[:currency]}\n" if g[:currency].present?
+    end
+
+    if n
+      t += "\n## Network\n"
+      t += "  ISP:          #{n[:isp]}\n"
+      t += "  Organization: #{n[:org]}\n" if n[:org].present? && n[:org] != n[:isp]
+      t += "  AS Number:    #{n[:asn]}\n"
+      t += "  AS Name:      #{n[:as_name]}\n" if n[:as_name].present?
+    end
+
+    if pr
+      t += "\n## Privacy\n"
+      conn_type = pr[:hosting] ? "Datacenter / Hosting" : pr[:mobile] ? "Mobile Network" : "Residential"
+      t += "  Type:     #{conn_type}\n"
+      t += "  Proxy:    #{pr[:proxy] ? "Detected" : "Not detected"}\n"
+      t += "  Hosting:  #{pr[:hosting] ? "Yes" : "No"}\n"
+      t += "  Mobile:   #{pr[:mobile] ? "Yes" : "No"}\n"
+    end
+
+    t += "\n## Client\n"
+    t += "  Browser:    #{ua[:browser]}#{ua[:browser_version].present? ? " " + ua[:browser_version] : ""}\n"
+    t += "  Engine:     #{ua[:engine]}\n" if ua[:engine] != "Unknown"
+    t += "  OS:         #{ua[:os]}#{ua[:os_version].present? ? " " + ua[:os_version] : ""}\n"
+    t += "  Device:     #{ua[:device]}\n"
+    t += "  Languages:  #{p[:client][:languages].join(", ")}\n" if p[:client][:languages].any?
+    t += "  Encoding:   #{p[:client][:encoding].join(", ")}\n" if p[:client][:encoding].any?
+    t += "  DNT:        #{p[:client][:dnt] ? "Enabled" : "Disabled"}\n"
+    t += "  GPC:        Enabled\n" if p[:client][:gpc]
+    t += "  User-Agent: #{ua[:raw]}\n"
+
+    if cf
+      t += "\n## Cloudflare\n"
+      t += "  Datacenter: #{cf[:datacenter]}#{cf[:datacenter_city] ? " (#{cf[:datacenter_city]})" : ""}\n" if cf[:datacenter]
+      t += "  Ray ID:     #{cf[:ray]}\n" if cf[:ray]
+      t += "  Country:    #{country_label(cf[:country])}\n" if cf[:country]
+      t += "  Scheme:     #{cf[:scheme].upcase}\n" if cf[:scheme]
+      t += "  WARP:       #{cf[:warp] ? "Active" : "Inactive"}\n"
+    end
+
+    t += "\n## Request\n"
+    t += "  Method:    #{p[:request][:method]}\n"
+    t += "  URL:       #{p[:request][:url]}\n"
+    t += "  Protocol:  #{p[:request][:protocol].to_s.upcase}\n"
+    t += "  Host:      #{p[:request][:host]}\n"
+    t += "  Timestamp: #{p[:timestamp]}\n"
+
+    t += "\n## Server\n"
+    t += "  Hostname: #{p[:server][:hostname]}\n"
+    t += "  Port:     #{p[:server][:port]}\n"
+    t += "  Uptime:   #{p[:server][:uptime_human]}\n"
+    t += "  Runtime:  #{p[:server][:runtime]}\n"
+    t += "  Platform: #{p[:server][:platform]}\n"
+
+    t += "\n## Headers\n"
+    p[:headers].each { |k, v| t += "  #{k}: #{v}\n" }
+
+    t += "\n---\nBuilt with #{p[:ferry]} — https://github.com/gastonmorixe/ferry\nFormats: / | /json | /xml | /text\n"
+    t
+  end
+
+  # ── View Helpers (exposed to ERB) ─────────────────────────────────────────
+
+  start_dataset_refresh_thread!
+  helper_method :country_flag, :country_label
 end

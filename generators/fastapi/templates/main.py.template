@@ -1,182 +1,1232 @@
+import asyncio
+import html
+import json
+import os
+import platform
+import re
 import socket
-import datetime
+import sys
+import time
+import threading
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="{{APP_NAME}}")
-
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+APP_NAME = "{{APP_NAME}}"
+APP_PORT = {{APP_PORT}}
+FERRY_VERSION = "{{FERRY_VERSION}}"
+START_TIME = time.time()
 
-def _build_context(request: Request) -> dict:
-    hostname = socket.gethostname()
+# ---------------------------------------------------------------------------
+# Cloudflare Datacenter Map (IATA -> City)
+# ---------------------------------------------------------------------------
+
+CF_DC: dict[str, str] = {
+    "ATL": "Atlanta", "IAD": "Ashburn", "BOS": "Boston", "ORD": "Chicago",
+    "DFW": "Dallas", "DEN": "Denver", "IAH": "Houston", "MCI": "Kansas City",
+    "LAX": "Los Angeles", "MIA": "Miami", "MSP": "Minneapolis", "BNA": "Nashville",
+    "EWR": "Newark", "JFK": "New York", "PHL": "Philadelphia", "PHX": "Phoenix",
+    "PDX": "Portland", "SJC": "San Jose", "SEA": "Seattle",
+    "SLC": "Salt Lake City", "TPA": "Tampa", "CLT": "Charlotte",
+    "IND": "Indianapolis", "CMH": "Columbus", "RDU": "Raleigh-Durham",
+    "PIT": "Pittsburgh", "MEM": "Memphis", "CVG": "Cincinnati",
+    "MKE": "Milwaukee", "OMA": "Omaha", "SMF": "Sacramento",
+    "SAN": "San Diego", "SFO": "San Francisco", "HNL": "Honolulu",
+    "ANC": "Anchorage", "DTW": "Detroit", "STL": "St. Louis",
+    "YYZ": "Toronto", "YUL": "Montreal", "YVR": "Vancouver", "YYC": "Calgary",
+    "YOW": "Ottawa", "YWG": "Winnipeg", "YHZ": "Halifax",
+    "GRU": "S\u00e3o Paulo", "GIG": "Rio de Janeiro", "EZE": "Buenos Aires",
+    "SCL": "Santiago", "BOG": "Bogot\u00e1", "LIM": "Lima", "MEX": "Mexico City",
+    "PTY": "Panama City", "UIO": "Quito", "MVD": "Montevideo",
+    "CUR": "Cura\u00e7ao", "GUA": "Guatemala City", "SJO": "San Jos\u00e9",
+    "MDE": "Medell\u00edn", "CCS": "Caracas", "SDQ": "Santo Domingo",
+    "KIN": "Kingston", "NAS": "Nassau", "HAV": "Havana",
+    "AMS": "Amsterdam", "ATH": "Athens", "BCN": "Barcelona", "TXL": "Berlin",
+    "BRU": "Brussels", "OTP": "Bucharest", "BUD": "Budapest",
+    "KIV": "Chi\u0219in\u0103u", "CPH": "Copenhagen", "DUB": "Dublin",
+    "DUS": "D\u00fcsseldorf", "EDI": "Edinburgh", "FRA": "Frankfurt",
+    "HAM": "Hamburg", "HEL": "Helsinki", "IST": "Istanbul", "LIS": "Lisbon",
+    "LHR": "London", "MAD": "Madrid", "MRS": "Marseille", "MXP": "Milan",
+    "MUC": "Munich", "OSL": "Oslo", "CDG": "Paris", "PRG": "Prague",
+    "FCO": "Rome", "LED": "St Petersburg", "SOF": "Sofia", "ARN": "Stockholm",
+    "VIE": "Vienna", "WAW": "Warsaw", "ZAG": "Zagreb", "ZRH": "Zurich",
+    "BGW": "Baghdad", "GVA": "Geneva", "KBP": "Kyiv", "RIX": "Riga",
+    "TLL": "Tallinn", "VNO": "Vilnius", "SKG": "Thessaloniki",
+    "BEG": "Belgrade", "TIA": "Tirana", "LJU": "Ljubljana",
+    "BLR": "Bangalore", "BKK": "Bangkok", "PEK": "Beijing", "MAA": "Chennai",
+    "CKG": "Chongqing", "HKG": "Hong Kong", "HYD": "Hyderabad",
+    "CGK": "Jakarta", "KUL": "Kuala Lumpur", "BOM": "Mumbai", "CCU": "Kolkata",
+    "DEL": "New Delhi", "KIX": "Osaka", "ICN": "Seoul", "PVG": "Shanghai",
+    "SIN": "Singapore", "TPE": "Taipei", "NRT": "Tokyo",
+    "SGN": "Ho Chi Minh City", "HAN": "Hanoi", "MNL": "Manila",
+    "KTM": "Kathmandu", "CMB": "Colombo", "DAC": "Dhaka", "RGN": "Yangon",
+    "KHI": "Karachi", "ISB": "Islamabad",
+    "AKL": "Auckland", "SYD": "Sydney", "MEL": "Melbourne", "PER": "Perth",
+    "BNE": "Brisbane", "ADL": "Adelaide", "CHC": "Christchurch",
+    "CPT": "Cape Town", "JNB": "Johannesburg", "LOS": "Lagos",
+    "NBO": "Nairobi", "MBA": "Mombasa", "ACC": "Accra", "DKR": "Dakar",
+    "DAR": "Dar es Salaam", "MPM": "Maputo", "CMN": "Casablanca",
+    "ALG": "Algiers", "TUN": "Tunis", "CAI": "Cairo", "ADD": "Addis Ababa",
+    "AMM": "Amman", "BAH": "Bahrain", "DOH": "Doha", "DXB": "Dubai",
+    "KWI": "Kuwait City", "RUH": "Riyadh", "TLV": "Tel Aviv", "MCT": "Muscat",
+    "JED": "Jeddah",
+}
+
+# ---------------------------------------------------------------------------
+# Geo Cache & Local Dataset Lookup
+# ---------------------------------------------------------------------------
+
+_geo_cache: dict[str, tuple[Any, float]] = {}
+GEO_TTL = 5 * 60
+GEO_FAIL_TTL = 60
+IPDB_COUNTRY_URL = os.environ.get("IPDB_COUNTRY_URL") or "https://raw.githubusercontent.com/sapics/ip-location-db/main/geo-whois-asn-country/geo-whois-asn-country-ipv4-num.csv"
+IPDB_ASN_URL = os.environ.get("IPDB_ASN_URL") or "https://raw.githubusercontent.com/sapics/ip-location-db/main/iptoasn-asn/iptoasn-asn-ipv4-num.csv"
+IPDB_COMMIT_URL = os.environ.get("IPDB_COMMIT_URL") or "https://api.github.com/repos/sapics/ip-location-db/commits/main"
+IPDB_REFRESH_MS = int(os.environ.get("IPDB_REFRESH_MS") or str(6 * 60 * 60 * 1000))
+IPDB_TIMEOUT_MS = int(os.environ.get("IPDB_TIMEOUT_MS") or "5000")
+COUNTRY_DB_PATH = os.path.join(os.getcwd(), "data", "geo-whois-asn-country-ipv4-num.csv")
+ASN_DB_PATH = os.path.join(os.getcwd(), "data", "iptoasn-asn-ipv4-num.csv")
+COUNTRY_META_PATH = os.path.join(os.getcwd(), "country-meta.min.json")
+DATASET_SOURCE_PATH = os.path.join(os.getcwd(), "data", "ipdb-source.json")
+
+CONTINENT_NAMES: dict[str, str] = {
+    "AF": "Africa",
+    "AN": "Antarctica",
+    "AS": "Asia",
+    "EU": "Europe",
+    "NA": "North America",
+    "OC": "Oceania",
+    "SA": "South America",
+}
+
+HOSTING_ORG_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"cloudflare", r"amazon", r"aws", r"google", r"microsoft", r"azure",
+        r"digitalocean", r"hetzner", r"ovh", r"linode", r"oracle", r"akamai",
+        r"vultr", r"fastly", r"cdn", r"hosting", r"datacenter", r"colo",
+    )
+]
+
+MOBILE_ORG_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"mobile", r"wireless", r"cell", r"telecom", r"telefonica", r"vodafone",
+        r"orange", r"verizon", r"airtel", r"mtn", r"telstra", r"singtel",
+    )
+]
+
+_country_meta: Optional[dict[str, dict[str, str]]] = None
+_country_ranges: Optional[list[tuple[int, int, str]]] = None
+_asn_ranges: Optional[list[tuple[int, int, str, str]]] = None
+_datasets_ready = False
+_dataset_refresh_lock = threading.Lock()
+_dataset_refresh_started = False
+
+
+def _is_private_ip(ip: str) -> bool:
+    if not ip or ip in ("unknown", "::1", "127.0.0.1"):
+        return True
+    ip = re.sub(r"^::ffff:", "", ip)
+    if ip.startswith("10.") or ip.startswith("192.168."):
+        return True
+    if ip.startswith("172."):
+        parts = ip.split(".")
+        if len(parts) >= 2:
+            try:
+                oct2 = int(parts[1])
+                if 16 <= oct2 <= 31:
+                    return True
+            except ValueError:
+                pass
+    if ip.startswith("fc") or ip.startswith("fd"):
+        return True
+    return False
+
+
+def _parse_csv_line(line: str) -> list[str]:
+    out: list[str] = []
+    current = ""
+    in_quotes = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == '"':
+            if in_quotes and i + 1 < len(line) and line[i + 1] == '"':
+                current += '"'
+                i += 1
+            else:
+                in_quotes = not in_quotes
+        elif ch == "," and not in_quotes:
+            out.append(current)
+            current = ""
+        else:
+            current += ch
+        i += 1
+    out.append(current)
+    return out
+
+
+def _ipv4_to_number(ip: str) -> Optional[int]:
+    normalized = re.sub(r"^::ffff:", "", ip)
+    if not re.match(r"^\d+\.\d+\.\d+\.\d+$", normalized):
+        return None
+    values: list[int] = []
+    for part in normalized.split("."):
+        try:
+            value = int(part)
+        except ValueError:
+            return None
+        if value < 0 or value > 255:
+            return None
+        values.append(value)
+    return (((values[0] * 256 + values[1]) * 256 + values[2]) * 256 + values[3]) & 0xFFFFFFFF
+
+
+def _load_country_meta() -> dict[str, dict[str, str]]:
+    global _country_meta
+    if _country_meta is None:
+        with open(COUNTRY_META_PATH, "r", encoding="utf-8") as fh:
+            _country_meta = json.load(fh)
+    return _country_meta
+
+
+def _load_country_ranges() -> list[tuple[int, int, str]]:
+    global _country_ranges
+    if _country_ranges is None:
+        _country_ranges = []
+        with open(COUNTRY_DB_PATH, "r", encoding="utf-8") as fh:
+            for raw in fh.read().splitlines():
+                if not raw:
+                    continue
+                start, end, country_code = _parse_csv_line(raw)
+                _country_ranges.append((int(start), int(end), country_code))
+    return _country_ranges
+
+
+def _load_asn_ranges() -> list[tuple[int, int, str, str]]:
+    global _asn_ranges
+    if _asn_ranges is None:
+        _asn_ranges = []
+        with open(ASN_DB_PATH, "r", encoding="utf-8") as fh:
+            for raw in fh.read().splitlines():
+                if not raw:
+                    continue
+                start, end, asn, org = _parse_csv_line(raw)
+                _asn_ranges.append((int(start), int(end), asn, org))
+    return _asn_ranges
+
+
+def _fetch_url_text(url: str) -> str:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": f"{APP_NAME}/ferry-ipdb-updater",
+            "Accept": "application/json, text/plain, */*",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=IPDB_TIMEOUT_MS / 1000.0) as resp:
+        return resp.read().decode("utf-8")
+
+
+def _fetch_latest_commit_sha() -> Optional[str]:
+    try:
+        payload = json.loads(_fetch_url_text(IPDB_COMMIT_URL))
+        return payload.get("sha")
+    except Exception:
+        return None
+
+
+def _current_dataset_sha() -> Optional[str]:
+    try:
+        with open(DATASET_SOURCE_PATH, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        return payload.get("commit") or payload.get("sha")
+    except Exception:
+        return None
+
+
+def _write_dataset_source(sha: str) -> None:
+    os.makedirs(os.path.dirname(DATASET_SOURCE_PATH), exist_ok=True)
+    with open(DATASET_SOURCE_PATH, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "repo": "https://github.com/sapics/ip-location-db",
+                "commit": sha,
+                "generatedAt": datetime.now(timezone.utc).isoformat(),
+                "countryDataset": "geo-whois-asn-country",
+                "asnDataset": "iptoasn-asn",
+            },
+            fh,
+            indent=2,
+        )
+
+
+def _refresh_datasets_if_needed_sync(force: bool = False) -> None:
+    global _country_meta, _country_ranges, _asn_ranges, _datasets_ready
+    with _dataset_refresh_lock:
+        if not force:
+            _ensure_datasets_loaded()
+
+        current_sha = _current_dataset_sha()
+        latest_sha = _fetch_latest_commit_sha()
+        if not latest_sha or latest_sha == current_sha:
+            return
+
+        country_csv = _fetch_url_text(IPDB_COUNTRY_URL)
+        asn_csv = _fetch_url_text(IPDB_ASN_URL)
+
+        os.makedirs(os.path.dirname(COUNTRY_DB_PATH), exist_ok=True)
+        with open(f"{COUNTRY_DB_PATH}.tmp", "w", encoding="utf-8") as fh:
+            fh.write(country_csv)
+        with open(f"{ASN_DB_PATH}.tmp", "w", encoding="utf-8") as fh:
+            fh.write(asn_csv)
+        os.replace(f"{COUNTRY_DB_PATH}.tmp", COUNTRY_DB_PATH)
+        os.replace(f"{ASN_DB_PATH}.tmp", ASN_DB_PATH)
+        _write_dataset_source(latest_sha)
+
+        _country_meta = None
+        _country_ranges = None
+        _asn_ranges = None
+        _datasets_ready = False
+        _geo_cache.clear()
+        _ensure_datasets_loaded()
+
+
+def _start_dataset_refresh_loop() -> None:
+    global _dataset_refresh_started
+    if _dataset_refresh_started:
+        return
+    _dataset_refresh_started = True
+
+    def _loop() -> None:
+        while True:
+            try:
+                _refresh_datasets_if_needed_sync(False)
+            except Exception as exc:  # pragma: no cover - background telemetry only
+                print(f"dataset refresh failed: {exc}", file=sys.stderr)
+            time.sleep(IPDB_REFRESH_MS / 1000.0)
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
+def _search_range(ranges: list[tuple], value: int):
+    low = 0
+    high = len(ranges) - 1
+    while low <= high:
+        mid = (low + high) // 2
+        row = ranges[mid]
+        if value < row[0]:
+            high = mid - 1
+        elif value > row[1]:
+            low = mid + 1
+        else:
+            return row
+    return None
+
+
+def _ensure_datasets_loaded() -> None:
+    global _datasets_ready
+    if _datasets_ready:
+        return
+    if not os.path.exists(COUNTRY_DB_PATH) or not os.path.exists(ASN_DB_PATH):
+        raise FileNotFoundError("Missing local IP datasets under ./data")
+    _load_country_ranges()
+    _load_asn_ranges()
+    _datasets_ready = True
+
+
+def _country_meta_for(code: Optional[str]) -> Optional[dict[str, str]]:
+    if not code:
+        return None
+    meta = _load_country_meta().get(code, {})
+    continent_code = meta.get("continent", "")
     return {
-        "app": "{{APP_NAME}}",
-        "ferry": "⛵ Ferry v{{FERRY_VERSION}}",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-        "server": {
-            "hostname": hostname,
-            "port": {{APP_PORT}},
-        },
-        "request": {
-            "method": request.method,
-            "url": str(request.url),
-            "protocol": request.url.scheme,
-            "ip": request.client.host if request.client else "unknown",
-            "headers": dict(request.headers),
-        },
+        "continent": CONTINENT_NAMES.get(continent_code, continent_code),
+        "continentCode": continent_code,
+        "country": meta.get("name", code),
+        "currency": meta.get("currency", ""),
     }
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    ctx = _build_context(request)
-    srv = ctx["server"]
-    req = ctx["request"]
+def _is_hosting_org(org: str) -> bool:
+    return any(pattern.search(org or "") for pattern in HOSTING_ORG_PATTERNS)
 
-    header_rows = "".join(
-        f"<tr><td>{k}</td><td>{v}</td></tr>"
-        for k, v in req["headers"].items()
+
+def _is_mobile_org(org: str) -> bool:
+    return any(pattern.search(org or "") for pattern in MOBILE_ORG_PATTERNS)
+
+
+def _lookup_hostname(ip: str) -> Optional[str]:
+    if not ip or _is_private_ip(ip):
+        return None
+    try:
+        return socket.gethostbyaddr(re.sub(r"^::ffff:", "", ip))[0]
+    except Exception:
+        return None
+
+
+def _sync_geo_lookup(ip: str, fallback_country: Optional[str]) -> Optional[dict]:
+    now = time.time()
+    cache_key = f"{ip}:{fallback_country or ''}"
+    cached = _geo_cache.get(cache_key)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    try:
+        _ensure_datasets_loaded()
+        ip_num = _ipv4_to_number(ip)
+        country_row = _search_range(_load_country_ranges(), ip_num) if ip_num is not None else None
+        asn_row = _search_range(_load_asn_ranges(), ip_num) if ip_num is not None else None
+        country_code = (country_row[2] if country_row else None) or fallback_country or ""
+        meta = _country_meta_for(country_code)
+        reverse = _lookup_hostname(ip)
+
+        data = None
+        if country_code or asn_row:
+            org = asn_row[3] if asn_row else ""
+            asn = asn_row[2] if asn_row else ""
+            data = {
+                "continent": meta["continent"] if meta else "",
+                "continentCode": meta["continentCode"] if meta else "",
+                "country": meta["country"] if meta else country_code,
+                "countryCode": country_code,
+                "region": "",
+                "regionName": "",
+                "city": "",
+                "district": "",
+                "zip": "",
+                "lat": 0,
+                "lon": 0,
+                "timezone": "",
+                "offset": 0,
+                "currency": meta["currency"] if meta else "",
+                "isp": org,
+                "org": org,
+                "as": f"AS{asn}" if asn else "",
+                "asname": org,
+                "reverse": reverse or "",
+                "mobile": _is_mobile_org(org),
+                "proxy": False,
+                "hosting": _is_hosting_org(org),
+                "query": ip,
+            }
+
+        _geo_cache[cache_key] = (data, now + GEO_TTL)
+        return data
+    except Exception:
+        _geo_cache[cache_key] = (None, now + GEO_FAIL_TTL)
+        return None
+
+
+async def _lookup_geo(ip: str, fallback_country: Optional[str]) -> Optional[dict]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _sync_geo_lookup, ip, fallback_country)
+
+
+# ---------------------------------------------------------------------------
+# User-Agent Parser
+# ---------------------------------------------------------------------------
+
+def _parse_ua(raw: str) -> dict:
+    info: dict[str, str] = {
+        "raw": raw, "browser": "Unknown", "browserVersion": "",
+        "os": "Unknown", "osVersion": "", "device": "Unknown", "engine": "Unknown",
+    }
+    if not raw:
+        return info
+
+    # Browser detection
+    browser_patterns: list[tuple[str, str]] = [
+        (r"Edg(?:e|A|iOS)?/(\S+)", "Edge"),
+        (r"OPR/(\S+)", "Opera"),
+        (r"Vivaldi/(\S+)", "Vivaldi"),
+        (r"Brave/(\S+)", "Brave"),
+        (r"Firefox/(\S+)", "Firefox"),
+        (r"SamsungBrowser/(\S+)", "Samsung Internet"),
+        (r"UCBrowser/(\S+)", "UC Browser"),
+        (r"Chrome/(\S+)", "Chrome"),
+        (r"Version/(\S+).*Safari", "Safari"),
+        (r"curl/(\S+)", "curl"),
+        (r"Wget/(\S+)", "Wget"),
+        (r"HTTPie/(\S+)", "HTTPie"),
+        (r"Claude-User", "Claude"),
+    ]
+    for pattern, name in browser_patterns:
+        m = re.search(pattern, raw, re.IGNORECASE)
+        if m:
+            info["browser"] = name
+            info["browserVersion"] = m.group(1) if m.lastindex and m.lastindex >= 1 else ""
+            break
+    if info["browser"] == "Unknown" and re.search(r"bot|crawl|spider|slurp|feed|index", raw, re.IGNORECASE):
+        info["browser"] = "Bot"
+
+    # Engine
+    if re.search(r"Trident", raw, re.IGNORECASE):
+        info["engine"] = "Trident"
+    elif re.search(r"Gecko/\d", raw, re.IGNORECASE):
+        before = raw.split("Gecko")[0] if "Gecko" in raw else ""
+        if not re.search(r"like Gecko", before, re.IGNORECASE):
+            info["engine"] = "Gecko"
+    if re.search(r"AppleWebKit", raw, re.IGNORECASE):
+        info["engine"] = "WebKit"
+    if info["browser"] in ("Chrome", "Edge", "Opera", "Vivaldi", "Brave"):
+        info["engine"] = "Blink"
+
+    # OS
+    m = re.search(r"Windows NT ([\d.]+)", raw, re.IGNORECASE)
+    if m:
+        info["os"] = "Windows"
+        ver_map = {"10.0": "10+", "6.3": "8.1", "6.2": "8", "6.1": "7", "6.0": "Vista"}
+        info["osVersion"] = ver_map.get(m.group(1), m.group(1))
+    elif re.search(r"Mac OS X ([\d._]+)", raw, re.IGNORECASE):
+        info["os"] = "macOS"
+        info["osVersion"] = re.search(r"Mac OS X ([\d._]+)", raw, re.IGNORECASE).group(1).replace("_", ".")  # type: ignore[union-attr]
+    elif re.search(r"CrOS", raw, re.IGNORECASE):
+        info["os"] = "ChromeOS"
+    elif re.search(r"Android ([\d.]+)", raw, re.IGNORECASE):
+        info["os"] = "Android"
+        info["osVersion"] = re.search(r"Android ([\d.]+)", raw, re.IGNORECASE).group(1)  # type: ignore[union-attr]
+    elif re.search(r"iPhone OS ([\d_]+)", raw, re.IGNORECASE):
+        info["os"] = "iOS"
+        info["osVersion"] = re.search(r"iPhone OS ([\d_]+)", raw, re.IGNORECASE).group(1).replace("_", ".")  # type: ignore[union-attr]
+    elif re.search(r"iPad.*OS ([\d_]+)", raw, re.IGNORECASE):
+        info["os"] = "iPadOS"
+        info["osVersion"] = re.search(r"iPad.*OS ([\d_]+)", raw, re.IGNORECASE).group(1).replace("_", ".")  # type: ignore[union-attr]
+    elif re.search(r"Linux", raw, re.IGNORECASE):
+        info["os"] = "Linux"
+    elif re.search(r"FreeBSD", raw, re.IGNORECASE):
+        info["os"] = "FreeBSD"
+
+    # Device
+    if re.search(r"Mobile|Android.*Mobile|iPhone|iPod", raw, re.IGNORECASE):
+        info["device"] = "Mobile"
+    elif re.search(r"iPad|Android(?!.*Mobile)|Tablet", raw, re.IGNORECASE):
+        info["device"] = "Tablet"
+    elif re.search(r"Smart-?TV|Tizen|Web0S|NetCast", raw, re.IGNORECASE):
+        info["device"] = "Smart TV"
+    elif re.search(r"bot|crawl|spider", raw, re.IGNORECASE):
+        info["device"] = "Bot"
+    elif re.search(r"curl|wget|httpie|python-requests|go-http|java/", raw, re.IGNORECASE):
+        info["device"] = "CLI / Library"
+    else:
+        info["device"] = "Desktop"
+
+    return info
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _country_flag(code: str) -> str:
+    if not code or len(code) != 2:
+        return ""
+    return chr(ord(code[0].upper()) + 127397) + chr(ord(code[1].upper()) + 127397)
+
+
+def _country_label(code: Optional[str]) -> str:
+    if not code:
+        return ""
+    meta = _country_meta_for(code)
+    name = meta["country"] if meta else code
+    suffix = f" ({code})" if name != code else ""
+    return f"{_country_flag(code)} {name}{suffix}"
+
+
+def _ip_version(ip: str) -> str:
+    return "IPv6" if ":" in ip else "IPv4"
+
+
+def _get_client_ip(request: Request) -> str:
+    headers = request.headers
+    ip = (
+        headers.get("cf-connecting-ip")
+        or headers.get("true-client-ip")
+        or headers.get("x-real-ip")
+        or (headers.get("x-forwarded-for", "").split(",")[0].strip())
+        or (request.client.host if request.client else "")
+        or "unknown"
+    )
+    return ip
+
+
+def _get_cf_info(request: Request) -> Optional[dict]:
+    ray = request.headers.get("cf-ray")
+    if not ray:
+        return None
+
+    dc_code = None
+    dc_city = None
+    dash = ray.rfind("-")
+    if dash > 0:
+        dc_code = ray[dash + 1:]
+        dc_city = CF_DC.get(dc_code)
+
+    scheme = None
+    try:
+        visitor = json.loads(request.headers.get("cf-visitor", "{}"))
+        scheme = visitor.get("scheme")
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    return {
+        "detected": True,
+        "ray": ray[:dash] if dash > 0 else ray,
+        "datacenter": dc_code,
+        "datacenterCity": dc_city,
+        "country": request.headers.get("cf-ipcountry"),
+        "scheme": scheme,
+        "warp": bool(request.headers.get("cf-warp-tag-id")),
+    }
+
+
+def _parse_as(as_str: str) -> dict:
+    m = re.match(r"^(AS\d+)\s*(.*)", as_str)
+    if m:
+        return {"asn": m.group(1), "asName": m.group(2)}
+    return {"asn": as_str, "asName": ""}
+
+
+def _format_uptime(seconds: float) -> str:
+    s = int(seconds)
+    d = s // 86400
+    h = (s % 86400) // 3600
+    m = (s % 3600) // 60
+    sec = s % 60
+    if d > 0:
+        return f"{d}d {h}h {m}m"
+    if h > 0:
+        return f"{h}h {m}m {sec}s"
+    if m > 0:
+        return f"{m}m {sec}s"
+    return f"{sec}s"
+
+
+def _esc(s: str) -> str:
+    return html.escape(str(s), quote=True)
+
+
+def _xml_escape(s: str) -> str:
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
     )
 
-    html = f"""<!DOCTYPE html>
+
+def _has_proxy_signal(request: Request, cf: Optional[dict]) -> bool:
+    hop_count = len([part.strip() for part in request.headers.get("x-forwarded-for", "").split(",") if part.strip()])
+    return bool(
+        request.headers.get("via")
+        or request.headers.get("proxy-connection")
+        or request.headers.get("forwarded")
+        or hop_count > 1
+        or (cf and cf.get("warp"))
+    )
+
+
+def _build_privacy(request: Request, geo: Optional[dict], ua: dict, cf: Optional[dict]) -> Optional[dict]:
+    proxy = _has_proxy_signal(request, cf)
+    hosting = bool(geo["hosting"]) if geo else False
+    mobile = bool(geo["mobile"]) if geo else False
+    if not mobile and ua.get("device") == "Mobile":
+        mobile = _is_mobile_org(geo.get("org", "") if geo else "")
+    if not proxy and not hosting and not mobile:
+        return None
+    return {"proxy": proxy, "hosting": hosting, "mobile": mobile}
+
+
+# ---------------------------------------------------------------------------
+# Build Payload
+# ---------------------------------------------------------------------------
+
+async def _build_payload(request: Request) -> dict:
+    ip = _get_client_ip(request)
+    cf = _get_cf_info(request)
+    geo = await _lookup_geo(ip, cf.get("country") if cf else None)
+    ua = _parse_ua(request.headers.get("user-agent", ""))
+
+    langs = [
+        part.split(";")[0].strip()
+        for part in request.headers.get("accept-language", "").split(",")
+        if part.split(";")[0].strip()
+    ]
+    enc = [
+        part.strip()
+        for part in request.headers.get("accept-encoding", "").split(",")
+        if part.strip()
+    ]
+
+    dnt = request.headers.get("dnt") == "1"
+    gpc = request.headers.get("sec-gpc") == "1"
+
+    uptime = time.time() - START_TIME
+    as_info = _parse_as(geo["as"]) if geo and geo.get("as") else None
+    privacy = _build_privacy(request, geo, ua, cf)
+
+    headers_dict: dict[str, str] = {}
+    for k, v in request.headers.items():
+        headers_dict[k] = v
+
+    return {
+        "app": APP_NAME,
+        "ferry": f"⛵ Ferry v{FERRY_VERSION}",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "client": {
+            "ip": ip,
+            "ipVersion": _ip_version(ip),
+            "hostname": geo.get("reverse") if geo else None,
+            "geo": {
+                "continent": geo["continent"],
+                "continentCode": geo["continentCode"],
+                "country": geo["country"],
+                "countryCode": geo["countryCode"],
+                "flag": _country_flag(geo["countryCode"]),
+                "region": geo["region"],
+                "regionName": geo["regionName"],
+                "city": geo["city"],
+                "district": geo["district"],
+                "zip": geo["zip"],
+                "lat": geo["lat"],
+                "lon": geo["lon"],
+                "timezone": geo["timezone"],
+                "utcOffset": geo["offset"],
+                "currency": geo["currency"],
+            } if geo else None,
+            "network": {
+                "isp": geo["isp"],
+                "org": geo["org"],
+                "asn": as_info["asn"],
+                "asName": as_info["asName"],
+            } if geo and as_info else None,
+            "privacy": privacy,
+            "userAgent": ua,
+            "languages": langs,
+            "encoding": enc,
+            "dnt": dnt,
+            "gpc": gpc,
+        },
+        "cloudflare": cf,
+        "request": {
+            "method": request.method,
+            "url": str(request.url),
+            "protocol": cf["scheme"] if cf and cf.get("scheme") else request.url.scheme,
+            "host": request.headers.get("host", ""),
+        },
+        "server": {
+            "hostname": platform.node(),
+            "port": APP_PORT,
+            "uptime": int(uptime),
+            "uptimeHuman": _format_uptime(uptime),
+            "runtime": f"Python {sys.version.split()[0]}",
+            "platform": platform.system(),
+            "arch": platform.machine(),
+        },
+        "headers": headers_dict,
+    }
+
+
+# ---------------------------------------------------------------------------
+# HTML Renderer
+# ---------------------------------------------------------------------------
+
+def _row(label: str, value: str, cls: str = "") -> str:
+    td_attr = f' class="{cls}"' if cls else ""
+    return f"<tr><td>{_esc(label)}</td><td{td_attr}>{value}</td></tr>"
+
+
+def _badge(text: str, color: str) -> str:
+    return f'<span class="badge badge-{color}">{_esc(text)}</span>'
+
+
+def _build_html(p: dict) -> str:
+    g = p["client"]["geo"]
+    n = p["client"]["network"]
+    pr = p["client"]["privacy"]
+    cf = p["cloudflare"]
+    ua = p["client"]["userAgent"]
+
+    # Hero
+    if g:
+        location_text = g.get("city") or g.get("regionName") or g.get("country", "")
+        hero_location = f'<span class="ip-flag">{g["flag"]}</span> {_esc(location_text)}'
+        if g.get("city") and g.get("country"):
+            hero_location += f", {_esc(g['country'])}"
+    elif cf and cf.get("country"):
+        hero_location = _esc(_country_label(cf["country"]))
+    else:
+        hero_location = ""
+
+    hero_hostname = ""
+    if p["client"].get("hostname"):
+        hero_hostname = f'<div class="ip-hostname">{_esc(p["client"]["hostname"])}</div>'
+
+    # Location
+    location_rows = ""
+    if g:
+        if g.get("continent") or g.get("continentCode"):
+            location_rows += _row("Continent", f"{_esc(g['continent'])} ({_esc(g['continentCode'])})")
+        location_rows += _row("Country", f"{g['flag']} {_esc(g['country'])} ({_esc(g['countryCode'])})")
+        if g.get("regionName"):
+            location_rows += _row("Region", _esc(g["regionName"]))
+        if g.get("city"):
+            location_rows += _row("City", _esc(g["city"]))
+        if g.get("district"):
+            location_rows += _row("District", _esc(g["district"]))
+        if g.get("zip"):
+            location_rows += _row("Postal / ZIP", _esc(g["zip"]))
+        if g["lat"] or g["lon"]:
+            location_rows += _row(
+                "Coordinates",
+                f'<a class="coord-link" href="https://www.openstreetmap.org/?mlat={g["lat"]}&mlon={g["lon"]}#map=12/{g["lat"]}/{g["lon"]}" target="_blank" rel="noopener">{g["lat"]}, {g["lon"]}</a>',
+            )
+        if g.get("timezone"):
+            offset_hr = g["utcOffset"] / 3600
+            sign = "+" if g["utcOffset"] >= 0 else ""
+            location_rows += _row("Timezone", f"{_esc(g['timezone'])} (UTC{sign}{offset_hr:g})")
+        if g.get("currency"):
+            location_rows += _row("Currency", _esc(g["currency"]))
+
+    # Network
+    network_rows = ""
+    if n:
+        network_rows += _row("ISP", _esc(n["isp"]))
+        if n.get("org") and n["org"] != n["isp"]:
+            network_rows += _row("Organization", _esc(n["org"]))
+        network_rows += _row("AS Number", f'<span class="mono">{_esc(n["asn"])}</span>')
+        if n.get("asName"):
+            network_rows += _row("AS Name", _esc(n["asName"]))
+    network_rows += _row("IP Version", _esc(p["client"]["ipVersion"]))
+    if p["client"].get("hostname"):
+        network_rows += _row("Reverse DNS", f'<span class="mono">{_esc(p["client"]["hostname"])}</span>')
+
+    # Privacy
+    privacy_rows = ""
+    if pr:
+        if pr["hosting"]:
+            conn_type, conn_color = "Datacenter / Hosting", "yellow"
+        elif pr["mobile"]:
+            conn_type, conn_color = "Mobile Network", "blue"
+        else:
+            conn_type, conn_color = "Residential", "green"
+        privacy_rows += _row("Connection Type", _badge(conn_type, conn_color))
+        privacy_rows += _row("Proxy / VPN", _badge("Detected", "red") if pr["proxy"] else _badge("Not Detected", "green"))
+        privacy_rows += _row("Hosting / DC", _badge("Yes", "yellow") if pr["hosting"] else _badge("No", "green"))
+        privacy_rows += _row("Mobile Network", _badge("Yes", "blue") if pr["mobile"] else _badge("No", "gray"))
+
+    # Client
+    client_rows = ""
+    if ua["browser"] != "Unknown":
+        browser_text = _esc(ua["browser"])
+        if ua["browserVersion"]:
+            browser_text += " " + _esc(ua["browserVersion"])
+        client_rows += _row("Browser", browser_text)
+    else:
+        truncated = ua["raw"][:80] + ("\u2026" if len(ua["raw"]) > 80 else "")
+        client_rows += _row("Browser", f'<span class="unavailable">{_esc(truncated)}</span>')
+    if ua["engine"] != "Unknown":
+        client_rows += _row("Engine", _esc(ua["engine"]))
+    if ua["os"] != "Unknown":
+        os_text = _esc(ua["os"])
+        if ua["osVersion"]:
+            os_text += " " + _esc(ua["osVersion"])
+        client_rows += _row("OS", os_text)
+    else:
+        client_rows += _row("OS", '<span class="unavailable">Unknown</span>')
+    client_rows += _row("Device", _esc(ua["device"]))
+    if p["client"]["languages"]:
+        client_rows += _row("Languages", _esc(", ".join(p["client"]["languages"])))
+    if p["client"]["encoding"]:
+        client_rows += _row("Encoding", _esc(", ".join(p["client"]["encoding"])))
+    client_rows += _row("Do Not Track", _badge("Enabled", "green") if p["client"]["dnt"] else _badge("Disabled", "gray"))
+    if p["client"]["gpc"]:
+        client_rows += _row("Global Privacy", _badge("Enabled", "green"))
+
+    # Cloudflare
+    cf_section = ""
+    if cf:
+        cf_rows = ""
+        if cf.get("datacenter"):
+            dc_label = f'<span class="mono">{_esc(cf["datacenter"])}</span>'
+            if cf.get("datacenterCity"):
+                dc_label += f' \u2014 {_esc(cf["datacenterCity"])}'
+            cf_rows += _row("Datacenter", dc_label)
+        if cf.get("ray"):
+            cf_rows += _row("Ray ID", f'<span class="mono">{_esc(cf["ray"])}</span>')
+        if cf.get("country"):
+            cf_rows += _row("Country", _esc(_country_label(cf["country"])))
+        if cf.get("scheme"):
+            cf_rows += _row("Scheme", _esc(cf["scheme"].upper()))
+        cf_rows += _row("WARP", _badge("Active", "purple") if cf["warp"] else _badge("Inactive", "gray"))
+        cf_section = (
+            f'<h2>Cloudflare</h2><table><tbody>{cf_rows}</tbody></table>\n'
+            f'    <p class="section-note">Request proxied through Cloudflare \u2014 client TLS terminates at the edge</p>'
+        )
+
+    # Request
+    req_rows = (
+        _row("Method", f'<span class="mono">{_esc(p["request"]["method"])}</span>')
+        + _row("URL", f'<span class="mono">{_esc(p["request"]["url"])}</span>')
+        + _row("Protocol", _esc(p["request"]["protocol"].upper()))
+        + _row("Host", _esc(p["request"]["host"]))
+        + _row("Timestamp", f'<span class="mono">{_esc(p["timestamp"])}</span>')
+    )
+
+    # Server
+    srv = p["server"]
+    srv_rows = (
+        _row("Hostname", f'<span class="mono">{_esc(srv["hostname"])}</span>')
+        + _row("Port", str(srv["port"]))
+        + _row("Uptime", _esc(srv["uptimeHuman"]))
+        + _row("Runtime", _esc(srv["runtime"]))
+        + _row("Platform", f'{_esc(srv["platform"])} / {_esc(srv["arch"])}')
+    )
+
+    # Headers
+    sorted_headers = sorted(p["headers"].items(), key=lambda kv: kv[0].lower())
+    header_rows = "\n".join(
+        f'<tr><td>{_esc(k)}</td><td class="mono">{_esc(v)}</td></tr>'
+        for k, v in sorted_headers
+    )
+
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{ctx["app"]}</title>
+  <title>{_esc(APP_NAME)}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <div class="container">
-    <h1>{ctx["app"]}</h1>
-    <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></p>
+    <h1>{_esc(APP_NAME)}</h1>
+    <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">⛵ Ferry</a></p>
 
-    <h2>Request</h2>
-    <table>
-      <tr><td>Method</td><td>{req["method"]}</td></tr>
-      <tr><td>URL</td><td>{req["url"]}</td></tr>
-      <tr><td>Protocol</td><td>{req["protocol"]}</td></tr>
-      <tr><td>Client IP</td><td>{req["ip"]}</td></tr>
-      <tr><td>Timestamp</td><td>{ctx["timestamp"]}</td></tr>
-    </table>
-
-    <h2>Server</h2>
-    <table>
-      <tr><td>Hostname</td><td>{srv["hostname"]}</td></tr>
-      <tr><td>Port</td><td>{srv["port"]}</td></tr>
-    </table>
-
-    <h2>Headers</h2>
-    <table>
-      {header_rows}
-    </table>
-
-    <div class="formats">
-      <a href="/" class="active">[HTML]</a>
-      <a href="/json">[JSON]</a>
-      <a href="/xml">[XML]</a>
-      <a href="/text">[Text]</a>
+    <div class="ip-hero">
+      <div class="ip-label">Your IP Address</div>
+      <div class="ip-address">{_esc(p["client"]["ip"])}</div>
+      {f'<div class="ip-meta">{hero_location}</div>' if hero_location else ""}
+      {hero_hostname}
     </div>
 
-    <footer>Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></footer>
+    {f'<h2>Location</h2><table><tbody>{location_rows}</tbody></table>' if g else ""}
+
+    {f'<h2>Network</h2><table><tbody>{network_rows}</tbody></table>' if network_rows else ""}
+
+    {f'<h2>Privacy &amp; Security</h2><table><tbody>{privacy_rows}</tbody></table>' if pr else ""}
+
+    <h2>Client</h2>
+    <table><tbody>{client_rows}</tbody></table>
+
+    {cf_section}
+
+    <h2>Request</h2>
+    <table><tbody>{req_rows}</tbody></table>
+
+    <h2>Server</h2>
+    <table><tbody>{srv_rows}</tbody></table>
+
+    <details>
+      <summary>Headers <span class="count">({len(sorted_headers)})</span></summary>
+      <table><tbody>
+        {header_rows}
+      </tbody></table>
+    </details>
+
+    <div class="formats">
+      <a class="active" href="/">HTML</a>
+      <a href="/json">JSON</a>
+      <a href="/xml">XML</a>
+      <a href="/text">Text</a>
+    </div>
+
+    <footer>Built with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">⛵ Ferry</a></footer>
   </div>
 </body>
 </html>"""
-    return HTMLResponse(content=html)
 
 
-@app.get("/json")
-async def json_view(request: Request):
-    ctx = _build_context(request)
-    return JSONResponse(content=ctx)
+# ---------------------------------------------------------------------------
+# XML Renderer
+# ---------------------------------------------------------------------------
+
+def _xel(tag: str, val: Any) -> str:
+    if val is None:
+        return f"  <{tag} />"
+    return f"  <{tag}>{_xml_escape(str(val))}</{tag}>"
 
 
-@app.get("/xml")
-async def xml_view(request: Request):
-    ctx = _build_context(request)
-    srv = ctx["server"]
-    req = ctx["request"]
+def _build_xml(p: dict) -> str:
+    g = p["client"]["geo"]
+    n = p["client"]["network"]
+    pr = p["client"]["privacy"]
+    cf = p["cloudflare"]
+    ua = p["client"]["userAgent"]
 
-    header_xml = "".join(
-        f"    <header name={_xml_attr(k)}>{_xml_escape(v)}</header>\n"
-        for k, v in req["headers"].items()
+    hdrs = "\n".join(
+        f'      <header name="{_xml_escape(k)}">{_xml_escape(v)}</header>'
+        for k, v in sorted(p["headers"].items(), key=lambda kv: kv[0].lower())
     )
 
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+    geo_xml = "  <geo />"
+    if g:
+        geo_xml = f"""  <geo>
+    {_xel("continent", g["continent"])}
+    {_xel("continentCode", g["continentCode"])}
+    {_xel("country", g["country"])}
+    {_xel("countryCode", g["countryCode"])}
+    {_xel("flag", g["flag"])}
+    {_xel("regionName", g["regionName"])}
+    {_xel("city", g["city"])}
+    {_xel("district", g["district"])}
+    {_xel("zip", g["zip"])}
+    {_xel("lat", g["lat"])}
+    {_xel("lon", g["lon"])}
+    {_xel("timezone", g["timezone"])}
+    {_xel("utcOffset", g["utcOffset"])}
+    {_xel("currency", g["currency"])}
+    </geo>"""
+
+    net_xml = "  <network />"
+    if n:
+        net_xml = f"""  <network>
+    {_xel("isp", n["isp"])}
+    {_xel("org", n["org"])}
+    {_xel("asn", n["asn"])}
+    {_xel("asName", n["asName"])}
+    </network>"""
+
+    priv_xml = "  <privacy />"
+    if pr:
+        priv_xml = f"""  <privacy>
+    {_xel("proxy", pr["proxy"])}
+    {_xel("hosting", pr["hosting"])}
+    {_xel("mobile", pr["mobile"])}
+    </privacy>"""
+
+    cf_xml = "  <cloudflare />"
+    if cf:
+        cf_xml = f"""  <cloudflare>
+  {_xel("detected", True)}
+  {_xel("ray", cf["ray"])}
+  {_xel("datacenter", cf["datacenter"])}
+  {_xel("datacenterCity", cf["datacenterCity"])}
+  {_xel("country", cf["country"])}
+  {_xel("scheme", cf["scheme"])}
+  {_xel("warp", cf["warp"])}
+  </cloudflare>"""
+
+    langs_xml = "".join(f"<lang>{_xml_escape(l)}</lang>" for l in p["client"]["languages"])
+    enc_xml = "".join(f"<enc>{_xml_escape(e)}</enc>" for e in p["client"]["encoding"])
+
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
 <response>
-  <app>{_xml_escape(ctx["app"])}</app>
-  <ferry>⛵ Ferry v{{FERRY_VERSION}}</ferry>
-  <timestamp>{_xml_escape(ctx["timestamp"])}</timestamp>
-  <server>
-    <hostname>{_xml_escape(srv["hostname"])}</hostname>
-    <port>{srv["port"]}</port>
-  </server>
+  <app>{_xml_escape(p["app"])}</app>
+  <ferry>{_xml_escape(p["ferry"])}</ferry>
+  <timestamp>{_xml_escape(p["timestamp"])}</timestamp>
+  <client>
+  {_xel("ip", p["client"]["ip"])}
+  {_xel("ipVersion", p["client"]["ipVersion"])}
+  {_xel("hostname", p["client"]["hostname"])}
+  {geo_xml}
+  {net_xml}
+  {priv_xml}
+    <userAgent>
+    {_xel("raw", ua["raw"])}
+    {_xel("browser", ua["browser"])}
+    {_xel("browserVersion", ua["browserVersion"])}
+    {_xel("os", ua["os"])}
+    {_xel("osVersion", ua["osVersion"])}
+    {_xel("device", ua["device"])}
+    {_xel("engine", ua["engine"])}
+    </userAgent>
+    <languages>{langs_xml}</languages>
+    <encoding>{enc_xml}</encoding>
+  {_xel("dnt", p["client"]["dnt"])}
+  {_xel("gpc", p["client"]["gpc"])}
+  </client>
+  {cf_xml}
   <request>
-    <method>{_xml_escape(req["method"])}</method>
-    <url>{_xml_escape(req["url"])}</url>
-    <protocol>{_xml_escape(req["protocol"])}</protocol>
-    <ip>{_xml_escape(req["ip"])}</ip>
-    <headers>
-{header_xml}    </headers>
+  {_xel("method", p["request"]["method"])}
+  {_xel("url", p["request"]["url"])}
+  {_xel("protocol", p["request"]["protocol"])}
+  {_xel("host", p["request"]["host"])}
   </request>
+  <server>
+  {_xel("hostname", p["server"]["hostname"])}
+  {_xel("port", p["server"]["port"])}
+  {_xel("uptime", p["server"]["uptime"])}
+  {_xel("uptimeHuman", p["server"]["uptimeHuman"])}
+  {_xel("runtime", p["server"]["runtime"])}
+  {_xel("platform", p["server"]["platform"])}
+  {_xel("arch", p["server"]["arch"])}
+  </server>
+  <headers>
+{hdrs}
+  </headers>
 </response>"""
-    return Response(content=xml, media_type="application/xml")
 
 
-@app.get("/text")
-async def text_view(request: Request):
-    ctx = _build_context(request)
-    srv = ctx["server"]
-    req = ctx["request"]
+# ---------------------------------------------------------------------------
+# Text Renderer
+# ---------------------------------------------------------------------------
 
-    header_lines = "\n".join(
-        f"  {k}: {v}" for k, v in req["headers"].items()
-    )
+def _build_text(p: dict) -> str:
+    g = p["client"]["geo"]
+    n = p["client"]["network"]
+    pr = p["client"]["privacy"]
+    cf = p["cloudflare"]
+    ua = p["client"]["userAgent"]
 
-    text = f"""# {ctx["app"]}
+    t = f"# {p['app']}\n\n"
+    t += f"Your IP: {p['client']['ip']}\n"
+    if p["client"].get("hostname"):
+        t += f"Hostname: {p['client']['hostname']}\n"
+    t += f"IP Version: {p['client']['ipVersion']}\n"
 
-## Request
-  Method:    {req["method"]}
-  URL:       {req["url"]}
-  Protocol:  {req["protocol"]}
-  Client IP: {req["ip"]}
-  Timestamp: {ctx["timestamp"]}
+    if g:
+        t += "\n## Location\n"
+        if g.get("continent") or g.get("continentCode"):
+            t += f"  Continent:   {g['continent']} ({g['continentCode']})\n"
+        t += f"  Country:     {g['flag']} {g['country']} ({g['countryCode']})\n"
+        if g.get("regionName"):
+            t += f"  Region:      {g['regionName']}\n"
+        if g.get("city"):
+            t += f"  City:        {g['city']}\n"
+        if g.get("district"):
+            t += f"  District:    {g['district']}\n"
+        if g.get("zip"):
+            t += f"  Postal/ZIP:  {g['zip']}\n"
+        if g["lat"] or g["lon"]:
+            t += f"  Coordinates: {g['lat']}, {g['lon']}\n"
+        if g.get("timezone"):
+            offset_hr = g["utcOffset"] / 3600
+            sign = "+" if g["utcOffset"] >= 0 else ""
+            t += f"  Timezone:    {g['timezone']} (UTC{sign}{offset_hr:g})\n"
+        if g.get("currency"):
+            t += f"  Currency:    {g['currency']}\n"
 
-## Server
-  Hostname: {srv["hostname"]}
-  Port:     {srv["port"]}
+    if n:
+        t += "\n## Network\n"
+        t += f"  ISP:          {n['isp']}\n"
+        if n.get("org") and n["org"] != n["isp"]:
+            t += f"  Organization: {n['org']}\n"
+        t += f"  AS Number:    {n['asn']}\n"
+        if n.get("asName"):
+            t += f"  AS Name:      {n['asName']}\n"
 
-## Headers
-{header_lines}
+    if pr:
+        t += "\n## Privacy\n"
+        if pr["hosting"]:
+            conn_type = "Datacenter / Hosting"
+        elif pr["mobile"]:
+            conn_type = "Mobile Network"
+        else:
+            conn_type = "Residential"
+        t += f"  Type:     {conn_type}\n"
+        t += f"  Proxy:    {'Detected' if pr['proxy'] else 'Not detected'}\n"
+        t += f"  Hosting:  {'Yes' if pr['hosting'] else 'No'}\n"
+        t += f"  Mobile:   {'Yes' if pr['mobile'] else 'No'}\n"
 
----
-Built with ⛵ Ferry v{{FERRY_VERSION}} <https://github.com/gastonmorixe/ferry>
-Formats: / | /json | /xml | /text
-"""
-    return PlainTextResponse(content=text)
+    t += "\n## Client\n"
+    t += f"  Browser:    {ua['browser']}{' ' + ua['browserVersion'] if ua['browserVersion'] else ''}\n"
+    if ua["engine"] != "Unknown":
+        t += f"  Engine:     {ua['engine']}\n"
+    t += f"  OS:         {ua['os']}{' ' + ua['osVersion'] if ua['osVersion'] else ''}\n"
+    t += f"  Device:     {ua['device']}\n"
+    if p["client"]["languages"]:
+        t += f"  Languages:  {', '.join(p['client']['languages'])}\n"
+    if p["client"]["encoding"]:
+        t += f"  Encoding:   {', '.join(p['client']['encoding'])}\n"
+    t += f"  DNT:        {'Enabled' if p['client']['dnt'] else 'Disabled'}\n"
+    if p["client"]["gpc"]:
+        t += "  GPC:        Enabled\n"
+    t += f"  User-Agent: {ua['raw']}\n"
 
+    if cf:
+        t += "\n## Cloudflare\n"
+        if cf.get("datacenter"):
+            dc = cf["datacenter"]
+            if cf.get("datacenterCity"):
+                dc += f" ({cf['datacenterCity']})"
+            t += f"  Datacenter: {dc}\n"
+        if cf.get("ray"):
+            t += f"  Ray ID:     {cf['ray']}\n"
+        if cf.get("country"):
+            t += f"  Country:    {_country_label(cf['country'])}\n"
+        if cf.get("scheme"):
+            t += f"  Scheme:     {cf['scheme'].upper()}\n"
+        t += f"  WARP:       {'Active' if cf['warp'] else 'Inactive'}\n"
+
+    t += "\n## Request\n"
+    t += f"  Method:    {p['request']['method']}\n"
+    t += f"  URL:       {p['request']['url']}\n"
+    t += f"  Protocol:  {p['request']['protocol'].upper()}\n"
+    t += f"  Host:      {p['request']['host']}\n"
+    t += f"  Timestamp: {p['timestamp']}\n"
+
+    t += "\n## Server\n"
+    t += f"  Hostname: {p['server']['hostname']}\n"
+    t += f"  Port:     {p['server']['port']}\n"
+    t += f"  Uptime:   {p['server']['uptimeHuman']}\n"
+    t += f"  Runtime:  {p['server']['runtime']}\n"
+    t += f"  Platform: {p['server']['platform']} / {p['server']['arch']}\n"
+
+    t += "\n## Headers\n"
+    for k, v in sorted(p["headers"].items(), key=lambda kv: kv[0].lower()):
+        t += f"  {k}: {v}\n"
+
+    t += f"\n---\nBuilt with {p['ferry']} \u2014 https://github.com/gastonmorixe/ferry\nFormats: / | /json | /xml | /text\n"
+    return t
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.get("/health")
 async def health():
     return PlainTextResponse(content="ok")
 
 
-# ---------------------------------------------------------------------------
-# XML helpers
-# ---------------------------------------------------------------------------
-
-def _xml_escape(s: str) -> str:
-    return (
-        s.replace("&", "&amp;")
-         .replace("<", "&lt;")
-         .replace(">", "&gt;")
-         .replace('"', "&quot;")
-         .replace("'", "&apos;")
-    )
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    p = await _build_payload(request)
+    return HTMLResponse(content=_build_html(p))
 
 
-def _xml_attr(s: str) -> str:
-    return f'"{_xml_escape(s)}"'
+@app.get("/json")
+async def json_view(request: Request):
+    p = await _build_payload(request)
+    return JSONResponse(content=p)
+
+
+@app.get("/xml")
+async def xml_view(request: Request):
+    p = await _build_payload(request)
+    return Response(content=_build_xml(p), media_type="application/xml")
+
+
+@app.get("/text")
+async def text_view(request: Request):
+    p = await _build_payload(request)
+    return PlainTextResponse(content=_build_text(p))
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    _start_dataset_refresh_loop()
+    await asyncio.to_thread(_ensure_datasets_loaded)
+    await asyncio.to_thread(_refresh_datasets_if_needed_sync, False)

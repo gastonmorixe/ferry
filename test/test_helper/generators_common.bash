@@ -19,7 +19,7 @@ export ENV_FILE="$BATS_TEST_TMPDIR/.env"
 export CERT_DIR="$BATS_TEST_TMPDIR/certs"
 export CONFIG_FILE="$BATS_TEST_TMPDIR/config.yml"
 mkdir -p "$CERT_DIR"
-source "$FERRY_ROOT/ferry"
+source "$FERRY_ROOT/ferry.sh"
 
 # Run a generator and return the output dir path via $_GEN_OUT
 # Usage: run_generator <id> <name> <port>

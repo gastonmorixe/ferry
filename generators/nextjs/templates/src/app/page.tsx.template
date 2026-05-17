@@ -1,78 +1,243 @@
 import { headers } from 'next/headers'
-import { hostname } from 'os'
+import { buildPayload, countryFlag, countryLabel } from './lib/request-info'
 
 export const dynamic = 'force-dynamic'
 
-function getClientIp(hdrs: Awaited<ReturnType<typeof headers>>): string {
-  return (
-    hdrs.get('x-real-ip') ||
-    hdrs.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    '—'
-  )
-}
-
 export default async function Page() {
   const hdrs = await headers()
-  const ip = getClientIp(hdrs)
-  const host = hdrs.get('host') || '—'
-  const method = 'GET'
-  const proto = hdrs.get('x-forwarded-proto') || 'http'
-  const url = hdrs.get('x-forwarded-uri') || '/'
-  const serverHost = hostname()
-  const now = new Date().toISOString()
+  const p = await buildPayload(hdrs, '/')
 
-  const headerRows: [string, string][] = []
-  hdrs.forEach((value, key) => {
-    headerRows.push([key, value])
-  })
-  headerRows.sort((a, b) => a[0].localeCompare(b[0]))
+  const g = p.client.geo
+  const n = p.client.network
+  const pr = p.client.privacy
+  const cf = p.cloudflare
+  const ua = p.client.userAgent
+
+  const sortedHeaders = Object.entries(p.headers).sort(([a], [b]) => a.localeCompare(b))
+
+  const connType = pr.tor
+    ? 'Tor exit'
+    : pr.vpn
+      ? 'VPN'
+      : pr.hosting
+        ? 'Datacenter / Hosting'
+        : pr.mobile
+          ? 'Mobile Network'
+          : pr.residential
+            ? 'Residential'
+            : 'Unclassified'
+  const connColor = pr.tor
+    ? 'purple'
+    : pr.vpn
+      ? 'red'
+      : pr.hosting
+        ? 'yellow'
+        : pr.mobile
+          ? 'blue'
+          : pr.residential
+            ? 'green'
+            : 'gray'
 
   return (
     <div className="container">
-      <h1>{{APP_NAME}}</h1>
+      <h1>{'{{APP_NAME}}'}</h1>
       <p className="subtitle">
         Built with{' '}
-        <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry v{{FERRY_VERSION}}</a>
+        <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">
+          ⛵ Ferry
+        </a>
       </p>
+
+      <div className="ip-hero">
+        <div className="ip-label">Your IP Address</div>
+        <div className="ip-address">{p.client.ip}</div>
+        {g ? (
+          <div className="ip-meta">
+            <span className="ip-flag">{g.flag}</span>{' '}
+            {g.city || g.regionName || g.country}
+            {g.city && g.country ? `, ${g.country}` : ''}
+          </div>
+        ) : cf?.country ? (
+          <div className="ip-meta">
+            {countryLabel(cf.country)}
+          </div>
+        ) : null}
+        {p.client.hostname && <div className="ip-hostname">{p.client.hostname}</div>}
+      </div>
+
+      {g && (
+        <>
+          <h2>Location</h2>
+          <table>
+            <tbody>
+              {(g.continent || g.continentCode) && <tr><td>Continent</td><td>{g.continent} ({g.continentCode})</td></tr>}
+              <tr><td>Country</td><td>{g.flag} {g.country} ({g.countryCode})</td></tr>
+              {g.regionName && <tr><td>Region</td><td>{g.regionName}</td></tr>}
+              {g.city && <tr><td>City</td><td>{g.city}</td></tr>}
+              {g.district && <tr><td>District</td><td>{g.district}</td></tr>}
+              {g.zip && <tr><td>Postal / ZIP</td><td>{g.zip}</td></tr>}
+              {Number.isFinite(g.lat) && Number.isFinite(g.lon) && (g.lat !== 0 || g.lon !== 0) ? (
+                <tr>
+                  <td>Coordinates</td>
+                  <td>
+                    <a
+                      className="coord-link"
+                      href={`https://www.openstreetmap.org/?mlat=${g.lat}&mlon=${g.lon}#map=12/${g.lat}/${g.lon}`}
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      {g.lat}, {g.lon}
+                    </a>
+                  </td>
+                </tr>
+              ) : null}
+              {g.timezone && <tr><td>Timezone</td><td>{g.timezone} (UTC{g.utcOffset >= 0 ? '+' : ''}{g.utcOffset / 3600})</td></tr>}
+              {g.currency && <tr><td>Currency</td><td>{g.currency}</td></tr>}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {(n || p.client.ipVersion) && (
+        <>
+          <h2>Network</h2>
+          <table>
+            <tbody>
+              {n && (
+                <>
+                  <tr><td>ISP</td><td>{n.isp}</td></tr>
+                  {n.org && n.org !== n.isp && <tr><td>Organization</td><td>{n.org}</td></tr>}
+                  <tr><td>AS Number</td><td><span className="mono">{n.asn}</span></td></tr>
+                  {n.asName && <tr><td>AS Name</td><td>{n.asName}</td></tr>}
+                </>
+              )}
+              <tr><td>IP Version</td><td>{p.client.ipVersion}</td></tr>
+              {p.client.hostname && (
+                <tr><td>Reverse DNS</td><td><span className="mono">{p.client.hostname}</span></td></tr>
+              )}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      <h2>Privacy &amp; Security</h2>
+      <table>
+        <tbody>
+          <tr><td>Connection Type</td><td><span className={`badge badge-${connColor}`}>{connType}</span></td></tr>
+          <tr><td>Tor Exit</td><td>{pr.tor ? <span className="badge badge-purple">Yes</span> : <span className="badge badge-gray">No</span>}</td></tr>
+          <tr><td>VPN</td><td>{pr.vpn ? <span className="badge badge-red">Yes</span> : <span className="badge badge-gray">No</span>}</td></tr>
+          <tr><td>Hosting / DC</td><td>{pr.hosting ? <span className="badge badge-yellow">Yes</span> : <span className="badge badge-gray">No</span>}</td></tr>
+          <tr><td>Mobile Network</td><td>{pr.mobile ? <span className="badge badge-blue">Yes</span> : <span className="badge badge-gray">No</span>}</td></tr>
+          <tr><td>Residential</td><td>{pr.residential ? <span className="badge badge-green">Yes</span> : <span className="badge badge-gray">No</span>}</td></tr>
+          <tr><td>Forwarded Hops</td><td>{pr.forwarded ? <span className="badge badge-yellow">Yes</span> : <span className="badge badge-gray">No</span>}</td></tr>
+          <tr><td>Confidence</td><td><span className={`badge badge-${pr.confidence === 'high' ? 'green' : pr.confidence === 'medium' ? 'yellow' : 'gray'}`}>{pr.confidence}</span></td></tr>
+          {pr.sources.length > 0 && (
+            <tr><td>Signals</td><td><span className="mono">{pr.sources.join(', ')}</span></td></tr>
+          )}
+        </tbody>
+      </table>
+      <p className="section-note">Sources: Tor exits, X4BNet VPN/datacenter CIDRs, PeeringDB ASN types, rDNS heuristics. Residential proxies (e.g. Bright Data) cannot be detected from HTTP signals alone.</p>
+
+      <h2>Client</h2>
+      <table>
+        <tbody>
+          <tr>
+            <td>Browser</td>
+            <td>
+              {ua.browser !== 'Unknown'
+                ? `${ua.browser}${ua.browserVersion ? ' ' + ua.browserVersion : ''}`
+                : <span className="unavailable">{ua.raw.slice(0, 80)}{ua.raw.length > 80 ? '...' : ''}</span>
+              }
+            </td>
+          </tr>
+          {ua.engine !== 'Unknown' && <tr><td>Engine</td><td>{ua.engine}</td></tr>}
+          <tr>
+            <td>OS</td>
+            <td>
+              {ua.os !== 'Unknown'
+                ? `${ua.os}${ua.osVersion ? ' ' + ua.osVersion : ''}`
+                : <span className="unavailable">Unknown</span>
+              }
+            </td>
+          </tr>
+          <tr><td>Device</td><td>{ua.device}</td></tr>
+          {p.client.languages.length > 0 && <tr><td>Languages</td><td>{p.client.languages.join(', ')}</td></tr>}
+          {p.client.encoding.length > 0 && <tr><td>Encoding</td><td>{p.client.encoding.join(', ')}</td></tr>}
+          <tr><td>Do Not Track</td><td>{p.client.dnt ? <span className="badge badge-green">Enabled</span> : <span className="badge badge-gray">Disabled</span>}</td></tr>
+          {p.client.gpc && <tr><td>Global Privacy</td><td><span className="badge badge-green">Enabled</span></td></tr>}
+        </tbody>
+      </table>
+
+      {cf && (
+        <>
+          <h2>Cloudflare</h2>
+          <table>
+            <tbody>
+              {cf.datacenter && (
+                <tr>
+                  <td>Datacenter</td>
+                  <td><span className="mono">{cf.datacenter}</span>{cf.datacenterCity ? ` — ${cf.datacenterCity}` : ''}</td>
+                </tr>
+              )}
+              {cf.ray && <tr><td>Ray ID</td><td><span className="mono">{cf.ray}</span></td></tr>}
+              {cf.country && <tr><td>Country</td><td>{countryLabel(cf.country)}</td></tr>}
+              {cf.scheme && <tr><td>Scheme</td><td>{cf.scheme.toUpperCase()}</td></tr>}
+            </tbody>
+          </table>
+          <p className="section-note">Request proxied through Cloudflare — client TLS terminates at the edge</p>
+        </>
+      )}
 
       <h2>Request</h2>
       <table>
         <tbody>
-          <tr><td>method</td><td>{method}</td></tr>
-          <tr><td>url</td><td>{url}</td></tr>
-          <tr><td>protocol</td><td>{proto}</td></tr>
-          <tr><td>host</td><td>{host}</td></tr>
-          <tr><td>client ip</td><td>{ip}</td></tr>
-        </tbody>
-      </table>
-
-      <h2>Headers</h2>
-      <table>
-        <tbody>
-          {headerRows.map(([k, v]) => (
-            <tr key={k}><td>{k}</td><td>{v}</td></tr>
-          ))}
+          <tr><td>Method</td><td><span className="mono">{p.request.method}</span></td></tr>
+          <tr><td>URL</td><td><span className="mono">{p.request.url}</span></td></tr>
+          <tr><td>Protocol</td><td>{p.request.protocol.toUpperCase()}</td></tr>
+          <tr><td>Host</td><td>{p.request.host}</td></tr>
+          <tr><td>Timestamp</td><td><span className="mono">{p.timestamp}</span></td></tr>
         </tbody>
       </table>
 
       <h2>Server</h2>
       <table>
         <tbody>
-          <tr><td>hostname</td><td>{serverHost}</td></tr>
-          <tr><td>port</td><td>{{APP_PORT}}</td></tr>
-          <tr><td>time</td><td>{now}</td></tr>
+          <tr><td>Hostname</td><td><span className="mono">{p.server.hostname}</span></td></tr>
+          <tr><td>Port</td><td>{p.server.port}</td></tr>
+          <tr><td>Uptime</td><td>{p.server.uptimeHuman}</td></tr>
+          <tr><td>Runtime</td><td>{p.server.runtime}</td></tr>
+          <tr><td>Platform</td><td>{p.server.platform} / {p.server.arch}</td></tr>
         </tbody>
       </table>
 
+      <details open>
+        <summary>
+          Headers <span className="count">({sortedHeaders.length})</span>
+        </summary>
+        <table>
+          <tbody>
+            {sortedHeaders.map(([k, v]) => (
+              <tr key={k}>
+                <td>{k}</td>
+                <td className="mono">{v}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
+
       <div className="formats">
-        <a href="/" className="active">HTML</a>
+        <a className="active" href="/">HTML</a>
         <a href="/json">JSON</a>
         <a href="/xml">XML</a>
         <a href="/text">Text</a>
       </div>
 
       <footer>
-        <a href="https://github.com/gastonmorixe/ferry">Built with ⛵ Ferry</a>
+        Built with{' '}
+        <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">
+          ⛵ Ferry
+        </a>
       </footer>
     </div>
   )

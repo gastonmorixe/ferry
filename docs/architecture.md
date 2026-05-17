@@ -44,10 +44,8 @@ Defined in `docker-compose.yml`:
 ```
 cloudflared
   ├── depends_on: dokku
-  ├── volumes:
-  │     ./tunnels/providers/cloudflare/config.yml → /etc/cloudflared/config.yml (read-only)
-  │     ~/.cloudflared/<tunnel-id>.json → /etc/cloudflared/credentials.json (read-only)
-  ├── dns: 172.17.0.1 (NextDNS on Docker bridge gateway)
+  ├── env: TUNNEL_TOKEN (remotely-managed tunnel auth)
+  ├── DNS: inherits host /etc/resolv.conf via Docker embedded resolver
   ├── mem_limit: 256m
   ├── network: webserver
   └── restart: unless-stopped
@@ -57,7 +55,7 @@ dokku
   ├── volumes:
   │     dokku-data → /mnt/dokku (persistent state)
   │     /var/run/docker.sock (so Dokku can manage containers)
-  ├── dns: 172.17.0.1
+  ├── DNS: inherits host /etc/resolv.conf via Docker embedded resolver
   ├── mem_limit: 256m
   ├── network: webserver
   ├── env: DOKKU_HOSTNAME, DOKKU_HOST_ROOT, DOKKU_LIB_HOST_ROOT
@@ -91,31 +89,19 @@ docker run --rm -v dokku-data:/data -v $(pwd):/backup alpine tar czf /backup/dok
 
 ### External DNS (internet hostnames)
 
-The host runs **NextDNS** as the system DNS resolver. NextDNS uses DNS-over-HTTPS (port 443) to reach its upstream servers, which is important because the gateway firewall blocks all external DNS on port 53 (8.8.8.8, 1.1.1.1, 9.9.9.9 are all unreachable).
+Ferry containers inherit DNS from the host. There is no `dns:` override in `docker-compose.yml`. The chain is:
 
 ```
-Host:        localhost:53       (for host processes)
-Docker:      172.17.0.1:53     (for containers, via Docker bridge gateway)
-Upstream:    DNS-over-HTTPS     (bypasses port 53 firewall block)
+container → 127.0.0.11 (Docker embedded resolver)
+          → forwards to host's nameservers from /etc/resolv.conf
+          → upstream resolver (router, ISP, systemd-resolved, NextDNS, Pi-hole, etc.)
 ```
 
-Both `cloudflared` and `dokku` services have `dns: [172.17.0.1]` in docker-compose.yml so they can resolve external hostnames through NextDNS.
+This works for any host DNS setup without configuration. `ferry status` auto-detects the active host resolvers via `resolvectl` (or `/etc/resolv.conf` as fallback) and verifies that an ephemeral container in the `webserver` network can resolve a real Cloudflare hostname — proving the path cloudflared depends on actually works.
 
-**Why this is needed:** The host's `/etc/resolv.conf` points to `127.0.0.1` (host loopback). Containers can't reach `127.0.0.1` on the host, so they need the Docker bridge gateway IP (`172.17.0.1`) instead.
+**Why no hardcoded resolver?** Earlier Ferry versions pinned `dns: [172.17.0.1]` to point at a NextDNS listener on the Docker bridge gateway. That broke instantly when NextDNS was removed — cloudflared crash-looped because nothing answered on `172.17.0.1:53`. Inheriting the host's real resolver chain avoids that whole class of failure.
 
-**Boot ordering:** NextDNS must start **after** Docker, or the `docker0` interface (`172.17.0.1`) won't exist yet and the bind will fail, crashing all DNS. A systemd drop-in ensures correct ordering:
-
-```
-/etc/systemd/system/nextdns.service.d/after-docker.conf:
-  [Unit]
-  After=docker.service
-```
-
-NextDNS is configured to listen on both addresses:
-
-```bash
-sudo nextdns config set -listen localhost:53 -listen 172.17.0.1:53
-```
+**Custom upstream (optional):** If your host resolver is on `127.0.0.1` (a local proxy) and you can't change the host setup, add a `dns:` block to the compose service pointing at any reachable nameserver — see [troubleshooting.md](troubleshooting.md#custom-dns-upstream-optional).
 
 ### Internal DNS (container-to-container)
 

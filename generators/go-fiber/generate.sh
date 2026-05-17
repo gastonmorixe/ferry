@@ -19,6 +19,8 @@ generate() {
     shared_gitignore    go   "$out_dir"
     shared_dockerignore      "$out_dir"
     shared_style_css         "$out_dir/style.css"
+    shared_country_meta      "$out_dir/country-meta.min.json"
+    shared_ipdb_assets       "$out_dir"
     shared_app_json          "$out_dir"
 
     # Substitute {{APP_NAME}}, {{APP_PORT}}, {{FERRY_VERSION}}, {{YEAR}}

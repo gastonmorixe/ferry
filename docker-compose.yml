@@ -5,8 +5,6 @@ services:
     command: tunnel run
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
-    dns:
-      - 172.17.0.1
     networks:
       - webserver
     mem_limit: 256m
@@ -28,8 +26,6 @@ services:
     volumes:
       - dokku-data:/mnt/dokku
       - /var/run/docker.sock:/var/run/docker.sock
-    dns:
-      - 172.17.0.1
     pid: host
     mem_limit: 256m
     networks:

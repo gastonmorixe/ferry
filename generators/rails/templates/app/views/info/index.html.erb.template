@@ -1,54 +1,220 @@
 <%
-  req = @data[:request]
-  srv = @data[:server]
-  d   = @data
+  # Convenience aliases
+  g  = @p[:client][:geo]
+  n  = @p[:client][:network]
+  pr = @p[:client][:privacy]
+  cf = @p[:cloudflare]
+  ua = @p[:client][:user_agent]
+
+  # Hero pieces
+  hero_location = if g
+    flag = g[:flag]
+    city = g[:city].presence || g[:region_name].presence || g[:country]
+    suffix = (g[:city].present? && g[:country].present?) ? ", #{h(g[:country])}" : ""
+    raw(%Q{<span class="ip-flag">#{flag}</span> #{h(city)}#{suffix}})
+  elsif cf && cf[:country]
+    h(country_label(cf[:country]))
+  end
+
+  hero_hostname = @p[:client][:hostname]
+
+  # Location rows
+  location_rows = []
+  if g
+    location_rows << ["Continent", "#{h(g[:continent])} (#{h(g[:continent_code])})"] if g[:continent].present? || g[:continent_code].present?
+    location_rows << ["Country", "#{g[:flag]} #{h(g[:country])} (#{h(g[:country_code])})"]
+    location_rows << ["Region", h(g[:region_name])] if g[:region_name].present?
+    location_rows << ["City", h(g[:city])] if g[:city].present?
+    location_rows << ["District", h(g[:district])] if g[:district].present?
+    location_rows << ["Postal / ZIP", h(g[:zip])] if g[:zip].present?
+    if g[:lat].to_f.nonzero? || g[:lon].to_f.nonzero?
+      location_rows << ["Coordinates", raw(%Q{<a class="coord-link" href="https://www.openstreetmap.org/?mlat=#{g[:lat]}&mlon=#{g[:lon]}#map=12/#{g[:lat]}/#{g[:lon]}" target="_blank" rel="noopener">#{g[:lat]}, #{g[:lon]}</a>})]
+    end
+    if g[:timezone].present?
+      offset_hr = g[:utc_offset].to_f / 3600
+      location_rows << ["Timezone", "#{h(g[:timezone])} (UTC#{offset_hr >= 0 ? "+" : ""}#{offset_hr})"]
+    end
+    location_rows << ["Currency", h(g[:currency])] if g[:currency].present?
+  end
+
+  # Network rows
+  network_rows = []
+  if n
+    network_rows << ["ISP", h(n[:isp])]
+    network_rows << ["Organization", h(n[:org])] if n[:org].present? && n[:org] != n[:isp]
+    network_rows << ["AS Number", raw(%Q{<span class="mono">#{h(n[:asn])}</span>})]
+    network_rows << ["AS Name", h(n[:as_name])] if n[:as_name].present?
+  end
+  network_rows << ["IP Version", h(@p[:client][:ip_version])]
+  if @p[:client][:hostname]
+    network_rows << ["Reverse DNS", raw(%Q{<span class="mono">#{h(@p[:client][:hostname])}</span>})]
+  end
+
+  # Privacy rows
+  privacy_rows = []
+  if pr
+    if pr[:hosting]
+      conn_type = "Datacenter / Hosting"; conn_color = "yellow"
+    elsif pr[:mobile]
+      conn_type = "Mobile Network"; conn_color = "blue"
+    else
+      conn_type = "Residential"; conn_color = "green"
+    end
+    privacy_rows << ["Connection Type", raw(%Q{<span class="badge badge-#{conn_color}">#{h(conn_type)}</span>})]
+    privacy_rows << ["Proxy / VPN", raw(pr[:proxy] ? '<span class="badge badge-red">Detected</span>' : '<span class="badge badge-green">Not Detected</span>')]
+    privacy_rows << ["Hosting / DC", raw(pr[:hosting] ? '<span class="badge badge-yellow">Yes</span>' : '<span class="badge badge-green">No</span>')]
+    privacy_rows << ["Mobile Network", raw(pr[:mobile] ? '<span class="badge badge-blue">Yes</span>' : '<span class="badge badge-gray">No</span>')]
+  end
+
+  # Client rows
+  client_rows = []
+  if ua[:browser] != "Unknown"
+    browser_str = h(ua[:browser])
+    browser_str += " #{h(ua[:browser_version])}" if ua[:browser_version].present?
+    client_rows << ["Browser", browser_str]
+  else
+    truncated = ua[:raw].length > 80 ? "#{h(ua[:raw][0...80])}..." : h(ua[:raw])
+    client_rows << ["Browser", raw(%Q{<span class="unavailable">#{truncated}</span>})]
+  end
+  client_rows << ["Engine", h(ua[:engine])] if ua[:engine] != "Unknown"
+  if ua[:os] != "Unknown"
+    os_str = h(ua[:os])
+    os_str += " #{h(ua[:os_version])}" if ua[:os_version].present?
+    client_rows << ["OS", os_str]
+  else
+    client_rows << ["OS", raw('<span class="unavailable">Unknown</span>')]
+  end
+  client_rows << ["Device", h(ua[:device])]
+  client_rows << ["Languages", h(@p[:client][:languages].join(", "))] if @p[:client][:languages].any?
+  client_rows << ["Encoding", h(@p[:client][:encoding].join(", "))] if @p[:client][:encoding].any?
+  client_rows << ["Do Not Track", raw(@p[:client][:dnt] ? '<span class="badge badge-green">Enabled</span>' : '<span class="badge badge-gray">Disabled</span>')]
+  if @p[:client][:gpc]
+    client_rows << ["Global Privacy", raw('<span class="badge badge-green">Enabled</span>')]
+  end
+
+  # Cloudflare rows
+  cf_rows = []
+  if cf
+    if cf[:datacenter]
+      dc_str = %Q{<span class="mono">#{h(cf[:datacenter])}</span>}
+      dc_str += " &mdash; #{h(cf[:datacenter_city])}" if cf[:datacenter_city]
+      cf_rows << ["Datacenter", raw(dc_str)]
+    end
+    cf_rows << ["Ray ID", raw(%Q{<span class="mono">#{h(cf[:ray])}</span>})] if cf[:ray]
+    cf_rows << ["Country", h(country_label(cf[:country]))] if cf[:country]
+    cf_rows << ["Scheme", h(cf[:scheme].upcase)] if cf[:scheme]
+    cf_rows << ["WARP", raw(cf[:warp] ? '<span class="badge badge-purple">Active</span>' : '<span class="badge badge-gray">Inactive</span>')]
+  end
+
+  # Request rows
+  request_rows = [
+    ["Method", raw(%Q{<span class="mono">#{h(@p[:request][:method])}</span>})],
+    ["URL", raw(%Q{<span class="mono">#{h(@p[:request][:url])}</span>})],
+    ["Protocol", h(@p[:request][:protocol].to_s.upcase)],
+    ["Host", h(@p[:request][:host])],
+    ["Timestamp", raw(%Q{<span class="mono">#{h(@p[:timestamp])}</span>})],
+  ]
+
+  # Server rows
+  server_rows = [
+    ["Hostname", raw(%Q{<span class="mono">#{h(@p[:server][:hostname])}</span>})],
+    ["Port", @p[:server][:port].to_s],
+    ["Uptime", h(@p[:server][:uptime_human])],
+    ["Runtime", h(@p[:server][:runtime])],
+    ["Platform", h(@p[:server][:platform])],
+  ]
+
+  sorted_headers = @p[:headers].sort_by { |k, _| k }
 %>
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title><%= d[:app] %></title>
-  <link rel="stylesheet" href="/style.css">
-</head>
-<body>
+
 <div class="container">
-  <h1><%= d[:app] %></h1>
-  <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry v<%= InfoController::FERRY_VERSION %></a></p>
+  <h1><%= h(InfoController::APP_NAME) %></h1>
+  <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">&#9973; Ferry</a></p>
+
+  <div class="ip-hero">
+    <div class="ip-label">Your IP Address</div>
+    <div class="ip-address"><%= h(@p[:client][:ip]) %></div>
+    <% if hero_location %>
+      <div class="ip-meta"><%= hero_location %></div>
+    <% end %>
+    <% if hero_hostname %>
+      <div class="ip-hostname"><%= h(hero_hostname) %></div>
+    <% end %>
+  </div>
+
+  <% if g %>
+    <h2>Location</h2>
+    <table><tbody>
+      <% location_rows.each do |label, value| %>
+        <tr><td><%= h(label) %></td><td><%= value %></td></tr>
+      <% end %>
+    </tbody></table>
+  <% end %>
+
+  <% if network_rows.any? %>
+    <h2>Network</h2>
+    <table><tbody>
+      <% network_rows.each do |label, value| %>
+        <tr><td><%= h(label) %></td><td><%= value %></td></tr>
+      <% end %>
+    </tbody></table>
+  <% end %>
+
+  <% if pr %>
+    <h2>Privacy &amp; Security</h2>
+    <table><tbody>
+      <% privacy_rows.each do |label, value| %>
+        <tr><td><%= h(label) %></td><td><%= value %></td></tr>
+      <% end %>
+    </tbody></table>
+  <% end %>
+
+  <h2>Client</h2>
+  <table><tbody>
+    <% client_rows.each do |label, value| %>
+      <tr><td><%= h(label) %></td><td><%= value %></td></tr>
+    <% end %>
+  </tbody></table>
+
+  <% if cf %>
+    <h2>Cloudflare</h2>
+    <table><tbody>
+      <% cf_rows.each do |label, value| %>
+        <tr><td><%= h(label) %></td><td><%= value %></td></tr>
+      <% end %>
+    </tbody></table>
+    <p class="section-note">Request proxied through Cloudflare &mdash; client TLS terminates at the edge</p>
+  <% end %>
 
   <h2>Request</h2>
-  <table>
-    <tr><td>Method</td><td><%= req[:method] %></td></tr>
-    <tr><td>URL</td><td><%= req[:url] %></td></tr>
-    <tr><td>Protocol</td><td><%= req[:protocol] %></td></tr>
-    <tr><td>IP</td><td><%= req[:ip] %></td></tr>
-  </table>
-
-  <h2>Headers</h2>
-  <table>
-    <% req[:headers].each do |k, v| %>
-      <tr><td><%= k %></td><td><%= v %></td></tr>
+  <table><tbody>
+    <% request_rows.each do |label, value| %>
+      <tr><td><%= h(label) %></td><td><%= value %></td></tr>
     <% end %>
-  </table>
+  </tbody></table>
 
   <h2>Server</h2>
-  <table>
-    <tr><td>Hostname</td><td><%= srv[:hostname] %></td></tr>
-    <tr><td>Port</td><td><%= srv[:port] %></td></tr>
-    <tr><td>Timestamp</td><td><%= d[:timestamp] %></td></tr>
-    <tr><td>Ferry</td><td>v<%= InfoController::FERRY_VERSION %></td></tr>
-  </table>
+  <table><tbody>
+    <% server_rows.each do |label, value| %>
+      <tr><td><%= h(label) %></td><td><%= value %></td></tr>
+    <% end %>
+  </tbody></table>
+
+  <details>
+    <summary>Headers <span class="count">(<%= sorted_headers.length %>)</span></summary>
+    <table><tbody>
+      <% sorted_headers.each do |k, v| %>
+        <tr><td><%= h(k) %></td><td class="mono"><%= h(v) %></td></tr>
+      <% end %>
+    </tbody></table>
+  </details>
 
   <div class="formats">
-    <a href="/" class="active">HTML</a>
+    <a class="active" href="/">HTML</a>
     <a href="/json">JSON</a>
     <a href="/xml">XML</a>
     <a href="/text">Text</a>
   </div>
 
-  <footer>
-    <a href="https://github.com/gastonmorixe/ferry">Built with ⛵ Ferry</a>
-  </footer>
+  <footer>Built with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">&#9973; Ferry</a></footer>
 </div>
-</body>
-</html>

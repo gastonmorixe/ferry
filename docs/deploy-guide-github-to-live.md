@@ -160,8 +160,8 @@ This triggers the full build pipeline:
 # Check DNS resolves (may need to flush local DNS cache)
 dig +short <hostname>
 
-# If using NextDNS locally and DNS doesn't resolve yet:
-sudo nextdns restart
+# If your local resolver cached a negative answer, restart or flush it
+# (e.g. `sudo systemctl restart systemd-resolved`, or your DNS-proxy's restart command)
 
 # Test the live site
 curl -sI https://<hostname> | head -5
@@ -276,7 +276,7 @@ The "unable to enter the container to check that the process is bound" warning i
 
 ### DNS doesn't resolve after deploy
 
-1. **Negative cache:** If you queried the hostname before the CNAME existed, your DNS resolver cached the negative response. Fix: `sudo nextdns restart` (or wait ~30 minutes for TTL expiry).
+1. **Negative cache:** If you queried the hostname before the CNAME existed, your DNS resolver cached the negative response. Fix: restart or flush your local resolver (e.g. `sudo systemctl restart systemd-resolved`), or wait ~30 minutes for TTL expiry.
 2. **Propagation delay:** New CNAME records can take 1-5 minutes to propagate globally.
 3. **Wrong zone:** The domain must be in your Cloudflare account. Check with `ferry status`.
 

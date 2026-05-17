@@ -9,7 +9,7 @@ The following were already installed on the host before this setup:
 - **Linux** (any architecture supported by Docker)
 - **Docker 29.3.0** + **Docker Compose v5.1.0**
 - **cloudflared 2026.2.0** (installed on the host, used only for tunnel creation)
-- **NextDNS** running as system DNS resolver
+- A working system DNS resolver (anything goes: router via DHCP, systemd-resolved, NextDNS, Pi-hole, corporate DNS — Ferry inherits whatever the host uses)
 
 ## Step 1: Create Cloudflare Tunnel
 
@@ -45,38 +45,23 @@ ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "<user>@<tunnel-name>"
 
 This key is used for `git push dokku` over SSH.
 
-## Step 3: Configure NextDNS for Docker
+## Step 3: Verify DNS works inside containers
 
-Docker containers can't reach `localhost:53` (the host's loopback). NextDNS needs to also listen on the Docker bridge gateway (`172.17.0.1`).
-
-**Critical boot ordering issue:** NextDNS starts before Docker, so the `docker0` interface (`172.17.0.1`) doesn't exist yet. If NextDNS tries to bind to an address that doesn't exist, it crashes **all** listeners (including `localhost:53`) due to a shared `cancel()` context in its source code. This causes total DNS failure on the host.
-
-**Fix:** Add a systemd drop-in to make NextDNS start after Docker:
+Ferry inherits DNS from the host — no compose override needed for most setups. After starting the stack (Step 6), confirm both sides of the path work:
 
 ```bash
-# 1. Create drop-in (survives NextDNS package upgrades)
-sudo mkdir -p /etc/systemd/system/nextdns.service.d
-sudo tee /etc/systemd/system/nextdns.service.d/after-docker.conf > /dev/null << 'EOF'
-[Unit]
-After=docker.service
-EOF
-sudo systemctl daemon-reload
-
-# 2. Add the Docker bridge listener
-sudo nextdns config set -listen localhost:53 -listen 172.17.0.1:53
-sudo systemctl restart nextdns
+ferry status
+# Look for:
+#   Host DNS           <your resolver> ✓
+#   Container DNS      ✓ argotunnel.com resolves from webserver net
 ```
 
-Verify:
-```bash
-ss -lntu | grep ':53 '
-# Should show both 127.0.0.1:53 AND 172.17.0.1:53
-```
+If `Container DNS` shows ✗ while `Host DNS` is fine, the host resolver is unreachable from containers — most commonly because it's bound to `127.0.0.1` (a local DNS proxy like NextDNS CLI, dnsmasq, or systemd-resolved's stub). Containers cannot reach the host's loopback.
 
-**Why this is safe:**
-- Docker doesn't need DNS to start. It just creates the daemon and bridge interface
-- Host DNS is briefly unavailable during early boot (until NextDNS starts), which is already the case today
-- All container DNS goes through NextDNS, preserving ad-blocking and filtering
+**Two options to fix:**
+
+1. **Recommended:** Make the host resolver listen on an interface containers can reach (LAN IP, or the Docker bridge gateway `172.17.0.1`). Then nothing in Ferry needs to change.
+2. **Compose override:** Add a `dns:` block to the affected service pointing at any reachable nameserver (your router, a LAN DNS server, or a public resolver if your network allows port 53 out). See [troubleshooting.md](troubleshooting.md#custom-dns-upstream-optional).
 
 ## Step 4: Create Project Files
 
@@ -192,9 +177,9 @@ These are problems we hit and solved. Documented here so we don't repeat them.
 
 **Problem:** `npm install` during Docker build fails with `EAI_AGAIN` / `getaddrinfo` errors. After reboot, cloudflared can't resolve Cloudflare edge IPs.
 
-**Root cause:** Host DNS is `127.0.0.1` (NextDNS via DNS-over-HTTPS). Containers can't reach `127.0.0.1` on the host. All external DNS servers (8.8.8.8, 1.1.1.1, 9.9.9.9) are blocked by the gateway firewall on port 53.
+**Root cause:** The host's resolver is unreachable from inside containers. The classic case: `/etc/resolv.conf` points at `127.0.0.1` (a local DNS proxy like NextDNS CLI, dnsmasq, or systemd-resolved's stub) — Docker's embedded DNS at `127.0.0.11` forwards there, but containers cannot reach the host's loopback. A previous Ferry hardcoded `dns: [172.17.0.1]` to point at a NextDNS listener on the Docker bridge gateway, which crash-looped cloudflared the day NextDNS was removed.
 
-**Solution:** Configure NextDNS to also listen on `172.17.0.1:53` (Docker bridge gateway), and add `dns: [172.17.0.1]` to compose services. **But** NextDNS must start **after** Docker. Otherwise `172.17.0.1` doesn't exist yet, the bind fails, and NextDNS's shared `cancel()` context tears down all listeners including `localhost:53`, causing total DNS failure. See Step 3 for the systemd drop-in fix.
+**Solution:** Ferry no longer hardcodes a resolver. Containers inherit `/etc/resolv.conf` from the host. If your host resolver lives on `127.0.0.1` and you can't move it, see [troubleshooting.md → Custom DNS upstream](troubleshooting.md#custom-dns-upstream-optional) for the per-service `dns:` override. `ferry status` reports both `Host DNS` and `Container DNS` rows so this category of failure is visible on every run.
 
 ### 2. Cloudflared can't read credentials.json
 

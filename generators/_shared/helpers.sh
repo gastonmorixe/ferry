@@ -62,6 +62,43 @@ shared_style_css() {
     cp "$SHARED_DIR/assets/style.css" "$dest"
 }
 
+# Copy shared country metadata for ISO code enrichment
+shared_country_meta() {
+    local dest="$1"
+    cp "$SHARED_DIR/assets/country-meta.min.json" "$dest"
+}
+
+# Copy vendored IP database assets into generated apps.
+# Refresh the vendored copies with scripts/update-ipdb-assets.sh.
+# Sources: sapics/ip-location-db (country + ASN), X4BNet/lists_vpn (VPN + datacenter CIDRs),
+# Tor Project (exit list), PeeringDB (ASN→info_type classification).
+shared_ipdb_assets() {
+    local dest_dir="$1"
+    local asset_dir
+    local files=(
+        geo-whois-asn-country-ipv4-num.csv
+        iptoasn-asn-ipv4-num.csv
+        x4bnet-vpn-ipv4.txt
+        x4bnet-datacenter-ipv4.txt
+        tor-exits.txt
+        peeringdb-asn-types.json
+        ipdb-source.json
+    )
+
+    asset_dir="$SHARED_DIR/assets/ipdb"
+    for f in "${files[@]}"; do
+        [[ -f "$asset_dir/$f" ]] || {
+            echo "missing vendored asset: $asset_dir/$f (run scripts/update-ipdb-assets.sh)" >&2
+            return 1
+        }
+    done
+
+    mkdir -p "$dest_dir/data"
+    for f in "${files[@]}"; do
+        cp "$asset_dir/$f" "$dest_dir/data/$f"
+    done
+}
+
 # Copy shared app.json healthcheck template
 # Usage: shared_app_json <dest_dir> [<health_path>]
 # Default health_path is /health; React should pass /

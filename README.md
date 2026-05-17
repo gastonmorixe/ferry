@@ -40,16 +40,18 @@ $ ferry deploy myapp -r owner/repo -H app.example.com -y
 
 ## Features
 
-- 🛬 **Zero open ports.** No 80, no 443, no public IP. All traffic flows through Cloudflare's encrypted tunnel.
-- 🧱 **Built-in app scaffolding.** `ferry new` generates starter apps for Express, FastAPI, Next.js, Rails, Go, Rust, React, and more.
-- 🚀 **One-command deploy.** `ferry deploy` handles app creation, DNS, ingress, tunnel restart, git push, and verification.
-- 🧑‍💻 **Git push deploys.** Standard `git push dokku main:master` workflow, just like Heroku.
-- 🌎 **Automatic DNS.** CNAME records created via Cloudflare API for any domain in your account.
-- 🔦 **Auto port detection.** Reads `Dockerfile EXPOSE`, framework conventions (Next.js, Nuxt, Remix, Express), or `package.json` scripts.
-- 🔐 **Free TLS.** SSL certificates managed by Cloudflare at the edge.
-- 💻 **Interactive TUI.** Arrow-key menu, 256-color palette, spinner animations, graceful degradation to plain text.
-- 👩🏼‍💻 **Fully scriptable.** `-y` flag for CI/CD, pipe-safe output, clean exit codes.
-- 🐳 **Docker Compose stack.** Two containers (`cloudflared` + `dokku`), persistent volumes, `restart: unless-stopped`.
+- 🛬 **Zero open ports:** No 80, no 443, no public IP. All traffic flows through Cloudflare's encrypted tunnel.
+- 🧱 **Built-in app scaffolding:** `ferry new` generates 11 starter app templates: Express, NestJS, Next.js, React, FastAPI, Django, Rails, Go (net/http + Fiber), Rust (Axum + Actix).
+- 🧭 **Privacy-aware generated apps:** Templates ship with multi-source IP classification — Tor / VPN / datacenter / mobile / residential — backed by free public datasets (sapics/ip-location-db, X4BNet, Tor Project, PeeringDB). No third-party API keys required.
+- 🚀 **One-command deploy:** `ferry deploy` handles app creation, DNS, ingress, tunnel restart, git push, and verification.
+- 🧑‍💻 **Git push deploys:** Standard `git push dokku main:master` workflow, just like Heroku.
+- 🌎 **Automatic DNS:** CNAME records created via Cloudflare API for any domain in your account.
+- 🔦 **Auto port detection:** Reads `Dockerfile EXPOSE`, framework conventions (Next.js, Nuxt, Remix, Express), or `package.json` scripts.
+- 🎛️ **Per-app tuning:** `ferry tune` adjusts container memory limits and (for Node apps) V8 heap size without a redeploy.
+- 🔐 **Free TLS:** SSL certificates managed by Cloudflare at the edge.
+- 💻 **Interactive TUI:** Arrow-key menu, 256-color palette, spinner animations, graceful degradation to plain text.
+- 👩🏼‍💻 **Fully scriptable:** `-y` flag for CI/CD, pipe-safe output, clean exit codes.
+- 🐳 **Docker Compose stack:** Two containers (`cloudflared` + `dokku`), persistent volumes, `restart: unless-stopped`.
 
 ---
 
@@ -133,10 +135,12 @@ ferry new [<name>]       Create a new app from a template
 ferry login              Set up Cloudflare API access
 ferry deploy [<name>]    Deploy a new app
 ferry remove [<name>]    Remove an app + DNS + ingress
+ferry prune reconcile    Reconcile orphan ingress rules
 ferry status             Full system dashboard
 ferry list               Quick app list
 ferry reload             Validate config + restart cloudflared
 ferry rebuild <name>     Rebuild a Dokku app
+ferry tune <name>        Adjust memory limits + Node heap (no redeploy)
 ferry logs <name>        Tail app logs
 ferry help               Show help
 ```
@@ -168,9 +172,18 @@ ferry help               Show help
 | `-r` / `--repo` | GitHub repo to clone (`owner/repo` or URL) |
 | `-H` / `--hostname` | Set hostname (default: `<name>.$DOKKU_HOSTNAME`) |
 | `-p` / `--port` | Set app port (default: auto-detect, fallback: 5000) |
+| `-m` / `--memory` | Container memory limit in MB (default: 256) |
 | `-b` / `--branch` | Git branch to push (default: auto-detect) |
 | `-d` / `--dir` | Local app directory (skip clone) |
 | `--no-push` | Set up infrastructure only, skip git push |
+
+**Tune:**
+
+| Flag | Effect |
+|---|---|
+| `-m` / `--memory` | New container memory limit in MB (min 64) |
+| `--heap` | Override Node `--max-old-space-size` (default: memory − 48) |
+| `--runtime` | `node` / `python` / `go` / `ruby` / `rust` — enables heap auto-tune for Node |
 
 **Login:**
 
@@ -209,6 +222,12 @@ ferry deploy myapp -r owner/repo -H app.example.com --no-push -y
 
 # Interactive deploy (prompts for everything)
 ferry deploy
+
+# Deploy with a bigger memory limit (Node apps auto-tune their V8 heap)
+ferry deploy myapp -r owner/repo -m 512 -y
+
+# Tune an existing app's memory without redeploying
+ferry tune myapp -m 512 --runtime node -y
 
 # Remove an app (destroys app, DNS, ingress)
 ferry remove myapp -y
@@ -321,7 +340,7 @@ CI is defined in [.github/workflows/ci.yml](.github/workflows/ci.yml) and runs t
 
 ```
 ferry/
-├── ferry                           # CLI script (bash)
+├── ferry.sh                        # CLI script (bash)
 ├── docker-compose.yml              # cloudflared + dokku services
 ├── .env                            # Secrets and config (gitignored)
 ├── .env.example                    # Template for .env

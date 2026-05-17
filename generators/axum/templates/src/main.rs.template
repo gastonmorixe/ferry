@@ -4,93 +4,374 @@ use axum::{
     Router,
     extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode, header},
-    response::{Html, IntoResponse},
+    response::IntoResponse,
     routing::get,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
 use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, RwLock};
 
 // ── Static CSS (embedded at compile time) ─────────────────────────────────────
 const STYLE_CSS: &str = include_str!("../style.css");
 
 // ── App state ─────────────────────────────────────────────────────────────────
-#[derive(Clone)]
 struct AppState {
     app_name: String,
     port: u16,
+    start_time: Instant,
+    geo_cache: RwLock<HashMap<String, GeoCacheEntry>>,
+    country_meta: RwLock<Option<Arc<HashMap<String, CountryMeta>>>>,
+    country_ranges: RwLock<Option<Arc<Vec<CountryRange>>>>,
+    asn_ranges: RwLock<Option<Arc<Vec<AsnRange>>>>,
+    datasets_ready: RwLock<bool>,
+    dataset_refresh_lock: Mutex<()>,
+    http_client: reqwest::Client,
 }
 
-// ── JSON response shape ───────────────────────────────────────────────────────
-#[derive(Serialize)]
-struct ServerInfo {
-    hostname: String,
-    port: u16,
+struct GeoCacheEntry {
+    data: Option<GeoData>,
+    expires: Instant,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CountryMeta {
+    continent: String,
+    name: String,
+    currency: String,
+}
+
+#[derive(Debug, Clone)]
+struct CountryRange {
+    start: u32,
+    end: u32,
+    country_code: String,
+}
+
+#[derive(Debug, Clone)]
+struct AsnRange {
+    start: u32,
+    end: u32,
+    asn: String,
+    org: String,
+}
+
+#[derive(Debug, Clone)]
+struct CountryLookup {
+    continent: String,
+    continent_code: String,
+    country: String,
+    currency: String,
+}
+
+const IPDB_COUNTRY_URL: &str = "https://raw.githubusercontent.com/sapics/ip-location-db/main/geo-whois-asn-country/geo-whois-asn-country-ipv4-num.csv";
+const IPDB_ASN_URL: &str = "https://raw.githubusercontent.com/sapics/ip-location-db/main/iptoasn-asn/iptoasn-asn-ipv4-num.csv";
+const IPDB_COMMIT_URL: &str = "https://api.github.com/repos/sapics/ip-location-db/commits/main";
+const IPDB_REFRESH_MS: u64 = 6 * 60 * 60 * 1000;
+const COUNTRY_DB_PATH: &str = "data/geo-whois-asn-country-ipv4-num.csv";
+const ASN_DB_PATH: &str = "data/iptoasn-asn-ipv4-num.csv";
+const COUNTRY_META_PATH: &str = "country-meta.min.json";
+const DATASET_SOURCE_PATH: &str = "data/ipdb-source.json";
+
+const CONTINENT_NAMES: &[(&str, &str)] = &[
+    ("AF", "Africa"),
+    ("AN", "Antarctica"),
+    ("AS", "Asia"),
+    ("EU", "Europe"),
+    ("NA", "North America"),
+    ("OC", "Oceania"),
+    ("SA", "South America"),
+];
+
+// ── Geo data from local IPDB dataset ─────────────────────────────────────────
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GeoData {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    continent: String,
+    #[serde(default, rename = "continentCode")]
+    continent_code: String,
+    #[serde(default)]
+    country: String,
+    #[serde(default, rename = "countryCode")]
+    country_code: String,
+    #[serde(default)]
+    region: String,
+    #[serde(default, rename = "regionName")]
+    region_name: String,
+    #[serde(default)]
+    city: String,
+    #[serde(default)]
+    district: String,
+    #[serde(default)]
+    zip: String,
+    #[serde(default)]
+    lat: f64,
+    #[serde(default)]
+    lon: f64,
+    #[serde(default)]
+    timezone: String,
+    #[serde(default)]
+    offset: i32,
+    #[serde(default)]
+    currency: String,
+    #[serde(default)]
+    isp: String,
+    #[serde(default)]
+    org: String,
+    #[serde(default, rename = "as")]
+    as_field: String,
+    #[serde(default)]
+    asname: String,
+    #[serde(default)]
+    reverse: String,
+    #[serde(default)]
+    mobile: bool,
+    #[serde(default)]
+    proxy: bool,
+    #[serde(default)]
+    hosting: bool,
+    #[serde(default)]
+    query: String,
+}
+
+// ── User-Agent info ───────────────────────────────────────────────────────────
+#[derive(Debug, Clone, Serialize)]
+struct UaInfo {
+    raw: String,
+    browser: String,
+    browser_version: String,
+    os: String,
+    os_version: String,
+    device: String,
+    engine: String,
+}
+
+// ── Cloudflare info ───────────────────────────────────────────────────────────
+#[derive(Debug, Clone, Serialize)]
+struct CfInfo {
+    detected: bool,
+    ray: Option<String>,
+    datacenter: Option<String>,
+    datacenter_city: Option<String>,
+    country: Option<String>,
+    scheme: Option<String>,
+    warp: bool,
+}
+
+// ── Full JSON payload ─────────────────────────────────────────────────────────
 #[derive(Serialize)]
-struct RequestInfo {
-    method: String,
-    url: String,
-    protocol: String,
-    ip: String,
+struct Payload {
+    app: String,
+    ferry: String,
+    timestamp: String,
+    client: ClientInfo,
+    cloudflare: Option<CfInfo>,
+    request: RequestPayload,
+    server: ServerPayload,
     headers: serde_json::Value,
 }
 
 #[derive(Serialize)]
-struct JsonBody {
-    app: String,
-    ferry: String,
-    timestamp: String,
-    server: ServerInfo,
-    request: RequestInfo,
+struct ClientInfo {
+    ip: String,
+    ip_version: String,
+    hostname: Option<String>,
+    geo: Option<GeoPayload>,
+    network: Option<NetworkPayload>,
+    privacy: Option<PrivacyPayload>,
+    user_agent: UaInfo,
+    languages: Vec<String>,
+    encoding: Vec<String>,
+    dnt: bool,
+    gpc: bool,
+}
+
+#[derive(Serialize)]
+struct GeoPayload {
+    continent: String,
+    continent_code: String,
+    country: String,
+    country_code: String,
+    flag: String,
+    region: String,
+    region_name: String,
+    city: String,
+    district: String,
+    zip: String,
+    lat: f64,
+    lon: f64,
+    timezone: String,
+    utc_offset: i32,
+    currency: String,
+}
+
+#[derive(Serialize)]
+struct NetworkPayload {
+    isp: String,
+    org: String,
+    asn: String,
+    as_name: String,
+}
+
+#[derive(Serialize)]
+struct PrivacyPayload {
+    proxy: bool,
+    hosting: bool,
+    mobile: bool,
+}
+
+#[derive(Serialize)]
+struct RequestPayload {
+    method: String,
+    url: String,
+    protocol: String,
+    host: String,
+}
+
+#[derive(Serialize)]
+struct ServerPayload {
+    hostname: String,
+    port: u16,
+    uptime: u64,
+    uptime_human: String,
+    runtime: String,
+    platform: String,
+    arch: String,
+}
+
+// ── CF Datacenter Map ─────────────────────────────────────────────────────────
+fn cf_datacenter_city(code: &str) -> Option<&'static str> {
+    let map: &[(&str, &str)] = &[
+        ("ATL", "Atlanta"),
+        ("IAD", "Ashburn"),
+        ("BOS", "Boston"),
+        ("ORD", "Chicago"),
+        ("DFW", "Dallas"),
+        ("DEN", "Denver"),
+        ("IAH", "Houston"),
+        ("MCI", "Kansas City"),
+        ("LAX", "Los Angeles"),
+        ("MIA", "Miami"),
+        ("MSP", "Minneapolis"),
+        ("BNA", "Nashville"),
+        ("EWR", "Newark"),
+        ("JFK", "New York"),
+        ("PHL", "Philadelphia"),
+        ("PHX", "Phoenix"),
+        ("PDX", "Portland"),
+        ("SJC", "San Jose"),
+        ("SEA", "Seattle"),
+        ("SLC", "Salt Lake City"),
+        ("TPA", "Tampa"),
+        ("YYZ", "Toronto"),
+        ("YUL", "Montreal"),
+        ("YVR", "Vancouver"),
+        ("GRU", "São Paulo"),
+        ("GIG", "Rio de Janeiro"),
+        ("EZE", "Buenos Aires"),
+        ("SCL", "Santiago"),
+        ("BOG", "Bogotá"),
+        ("LIM", "Lima"),
+        ("MEX", "Mexico City"),
+        ("PTY", "Panama City"),
+        ("UIO", "Quito"),
+        ("MVD", "Montevideo"),
+        ("CUR", "Curaçao"),
+        ("GUA", "Guatemala City"),
+        ("SJO", "San José"),
+        ("MDE", "Medellín"),
+        ("AMS", "Amsterdam"),
+        ("ATH", "Athens"),
+        ("BCN", "Barcelona"),
+        ("TXL", "Berlin"),
+        ("BRU", "Brussels"),
+        ("OTP", "Bucharest"),
+        ("BUD", "Budapest"),
+        ("KIV", "Chișinău"),
+        ("CPH", "Copenhagen"),
+        ("DUB", "Dublin"),
+        ("DUS", "Düsseldorf"),
+        ("EDI", "Edinburgh"),
+        ("FRA", "Frankfurt"),
+        ("HAM", "Hamburg"),
+        ("HEL", "Helsinki"),
+        ("IST", "Istanbul"),
+        ("LIS", "Lisbon"),
+        ("LHR", "London"),
+        ("MAD", "Madrid"),
+        ("MRS", "Marseille"),
+        ("MXP", "Milan"),
+        ("MUC", "Munich"),
+        ("OSL", "Oslo"),
+        ("CDG", "Paris"),
+        ("PRG", "Prague"),
+        ("FCO", "Rome"),
+        ("LED", "St Petersburg"),
+        ("SOF", "Sofia"),
+        ("ARN", "Stockholm"),
+        ("VIE", "Vienna"),
+        ("WAW", "Warsaw"),
+        ("ZAG", "Zagreb"),
+        ("ZRH", "Zurich"),
+        ("BLR", "Bangalore"),
+        ("BKK", "Bangkok"),
+        ("PEK", "Beijing"),
+        ("MAA", "Chennai"),
+        ("CKG", "Chongqing"),
+        ("HKG", "Hong Kong"),
+        ("HYD", "Hyderabad"),
+        ("CGK", "Jakarta"),
+        ("KUL", "Kuala Lumpur"),
+        ("BOM", "Mumbai"),
+        ("CCU", "Kolkata"),
+        ("DEL", "New Delhi"),
+        ("KIX", "Osaka"),
+        ("ICN", "Seoul"),
+        ("PVG", "Shanghai"),
+        ("SIN", "Singapore"),
+        ("TPE", "Taipei"),
+        ("NRT", "Tokyo"),
+        ("SGN", "Ho Chi Minh City"),
+        ("AKL", "Auckland"),
+        ("SYD", "Sydney"),
+        ("MEL", "Melbourne"),
+        ("PER", "Perth"),
+        ("BNE", "Brisbane"),
+        ("CPT", "Cape Town"),
+        ("JNB", "Johannesburg"),
+        ("LOS", "Lagos"),
+        ("NBO", "Nairobi"),
+        ("MBA", "Mombasa"),
+        ("AMM", "Amman"),
+        ("BAH", "Bahrain"),
+        ("DOH", "Doha"),
+        ("DXB", "Dubai"),
+        ("KWI", "Kuwait City"),
+        ("RUH", "Riyadh"),
+        ("TLV", "Tel Aviv"),
+        ("MCT", "Muscat"),
+    ];
+    map.iter().find(|(c, _)| *c == code).map(|(_, city)| *city)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-trait OrElseEmpty {
-    fn or_else_empty(self, fallback: &str) -> String;
-}
-impl OrElseEmpty for String {
-    fn or_else_empty(self, fallback: &str) -> String {
-        if self.is_empty() { fallback.to_string() } else { self }
-    }
-}
+const GEO_TTL: Duration = Duration::from_secs(5 * 60);
+const GEO_FAIL_TTL: Duration = Duration::from_secs(60);
 
 fn hostname() -> String {
     std::fs::read_to_string("/etc/hostname")
         .unwrap_or_default()
         .trim()
         .to_string()
-        .or_else_empty("unknown")
-}
-
-fn now_rfc3339() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before UNIX epoch")
-        .as_secs();
-    let (y, mo, d, h, mi, s) = unix_to_parts(secs);
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s)
-}
-
-/// Gregorian calendar decomposition of a UNIX timestamp (seconds).
-fn unix_to_parts(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let days = secs / 86400;
-    let z = days + 719468;
-    let era = z / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if mo <= 2 { y + 1 } else { y };
-    (y, mo, d, h, m, s)
 }
 
 fn html_escape(s: &str) -> String {
@@ -98,6 +379,676 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn xml_escape(s: &str) -> String {
+    html_escape(s)
+}
+
+fn country_flag(code: &str) -> String {
+    if code.len() != 2 {
+        return String::new();
+    }
+    code.to_uppercase()
+        .chars()
+        .filter_map(|c| char::from_u32(c as u32 + 127397))
+        .collect()
+}
+
+fn ip_version(ip: &str) -> &'static str {
+    if ip.contains(':') { "IPv6" } else { "IPv4" }
+}
+
+fn is_private_ip(ip: &str) -> bool {
+    if ip.is_empty() || ip == "unknown" || ip == "::1" || ip == "127.0.0.1" {
+        return true;
+    }
+    if ip.starts_with("10.") || ip.starts_with("192.168.") {
+        return true;
+    }
+    if ip.starts_with("172.") {
+        if let Some(oct) = ip.split('.').nth(1).and_then(|s| s.parse::<u8>().ok()) {
+            if (16..=31).contains(&oct) {
+                return true;
+            }
+        }
+    }
+    if ip.starts_with("fc") || ip.starts_with("fd") {
+        return true;
+    }
+    false
+}
+
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '"' {
+            if in_quotes && i + 1 < chars.len() && chars[i + 1] == '"' {
+                current.push('"');
+                i += 1;
+            } else {
+                in_quotes = !in_quotes;
+            }
+        } else if ch == ',' && !in_quotes {
+            out.push(current);
+            current = String::new();
+        } else {
+            current.push(ch);
+        }
+        i += 1;
+    }
+    out.push(current);
+    out
+}
+
+fn ipv4_to_number(ip: &str) -> Option<u32> {
+    let normalized = ip.trim_start_matches("::ffff:");
+    let parts: Vec<&str> = normalized.split('.').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let mut out: u32 = 0;
+    for part in parts {
+        let n: u32 = part.parse().ok()?;
+        if n > 255 {
+            return None;
+        }
+        out = (out << 8) | n;
+    }
+    Some(out)
+}
+
+fn continent_name(code: &str) -> String {
+    CONTINENT_NAMES
+        .iter()
+        .find(|(k, _)| *k == code)
+        .map(|(_, v)| (*v).to_string())
+        .unwrap_or_else(|| code.to_string())
+}
+
+fn load_country_meta() -> HashMap<String, CountryMeta> {
+    let data = fs::read_to_string(COUNTRY_META_PATH).unwrap_or_else(|_| "{}".to_string());
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+fn load_country_ranges() -> Vec<CountryRange> {
+    let data = fs::read_to_string(COUNTRY_DB_PATH).unwrap_or_default();
+    data.lines()
+        .filter_map(|line| {
+            if line.trim().is_empty() {
+                return None;
+            }
+            let row = parse_csv_line(line);
+            if row.len() < 3 {
+                return None;
+            }
+            Some(CountryRange {
+                start: row[0].trim().parse().ok()?,
+                end: row[1].trim().parse().ok()?,
+                country_code: row[2].trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn load_asn_ranges() -> Vec<AsnRange> {
+    let data = fs::read_to_string(ASN_DB_PATH).unwrap_or_default();
+    data.lines()
+        .filter_map(|line| {
+            if line.trim().is_empty() {
+                return None;
+            }
+            let row = parse_csv_line(line);
+            if row.len() < 4 {
+                return None;
+            }
+            Some(AsnRange {
+                start: row[0].trim().parse().ok()?,
+                end: row[1].trim().parse().ok()?,
+                asn: row[2].trim().to_string(),
+                org: row[3].trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn search_country_range(ranges: &[CountryRange], value: u32) -> Option<&CountryRange> {
+    let mut low: isize = 0;
+    let mut high: isize = ranges.len() as isize - 1;
+    while low <= high {
+        let mid = ((low + high) / 2) as usize;
+        let row = &ranges[mid];
+        if value < row.start {
+            high = mid as isize - 1;
+        } else if value > row.end {
+            low = mid as isize + 1;
+        } else {
+            return Some(row);
+        }
+    }
+    None
+}
+
+fn search_asn_range(ranges: &[AsnRange], value: u32) -> Option<&AsnRange> {
+    let mut low: isize = 0;
+    let mut high: isize = ranges.len() as isize - 1;
+    while low <= high {
+        let mid = ((low + high) / 2) as usize;
+        let row = &ranges[mid];
+        if value < row.start {
+            high = mid as isize - 1;
+        } else if value > row.end {
+            low = mid as isize + 1;
+        } else {
+            return Some(row);
+        }
+    }
+    None
+}
+
+async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String, reqwest::Error> {
+    let res = client
+        .get(url)
+        .header("User-Agent", "ferry-ipdb-updater")
+        .header("Accept", "application/json, text/plain, */*")
+        .send()
+        .await?;
+    res.error_for_status()?.text().await
+}
+
+async fn fetch_latest_commit_sha(client: &reqwest::Client) -> Option<String> {
+    let body = fetch_text(client, IPDB_COMMIT_URL).await.ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
+    parsed.get("sha")?.as_str().map(|s| s.to_string())
+}
+
+fn current_dataset_sha() -> Option<String> {
+    let body = fs::read_to_string(DATASET_SOURCE_PATH).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
+    parsed
+        .get("commit")
+        .and_then(|v| v.as_str())
+        .or_else(|| parsed.get("sha").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+}
+
+fn write_dataset_source(sha: &str) -> std::io::Result<()> {
+    fs::create_dir_all("data")?;
+    let payload = serde_json::json!({
+        "repo": "https://github.com/sapics/ip-location-db",
+        "commit": sha,
+        "generatedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "countryDataset": "geo-whois-asn-country",
+        "asnDataset": "iptoasn-asn",
+    });
+    fs::write(
+        DATASET_SOURCE_PATH,
+        serde_json::to_vec_pretty(&payload).unwrap(),
+    )
+}
+
+fn country_meta_for(meta_map: &HashMap<String, CountryMeta>, code: &str) -> Option<CountryLookup> {
+    if code.is_empty() {
+        return None;
+    }
+    let meta = meta_map.get(code)?;
+    Some(CountryLookup {
+        continent: continent_name(&meta.continent),
+        continent_code: meta.continent.clone(),
+        country: if meta.name.is_empty() {
+            code.to_string()
+        } else {
+            meta.name.clone()
+        },
+        currency: meta.currency.clone(),
+    })
+}
+
+fn is_hosting_org(org: &str) -> bool {
+    let org = org.to_lowercase();
+    [
+        "cloudflare",
+        "amazon",
+        "aws",
+        "google",
+        "microsoft",
+        "azure",
+        "digitalocean",
+        "hetzner",
+        "ovh",
+        "linode",
+        "oracle",
+        "akamai",
+        "vultr",
+        "fastly",
+        "cdn",
+        "hosting",
+        "datacenter",
+        "colo",
+    ]
+    .iter()
+    .any(|needle| org.contains(needle))
+}
+
+fn is_mobile_org(org: &str) -> bool {
+    let org = org.to_lowercase();
+    [
+        "mobile",
+        "wireless",
+        "cell",
+        "telecom",
+        "telefonica",
+        "vodafone",
+        "orange",
+        "verizon",
+        "airtel",
+        "mtn",
+        "telstra",
+        "singtel",
+    ]
+    .iter()
+    .any(|needle| org.contains(needle))
+}
+
+async fn ensure_datasets_loaded(state: &AppState) -> Result<(), String> {
+    if *state.datasets_ready.read().await {
+        return Ok(());
+    }
+    if !Path::new(COUNTRY_DB_PATH).exists()
+        || !Path::new(ASN_DB_PATH).exists()
+        || !Path::new(COUNTRY_META_PATH).exists()
+    {
+        return Err("Missing local IP datasets under ./data".to_string());
+    }
+    *state.country_meta.write().await = Some(Arc::new(load_country_meta()));
+    *state.country_ranges.write().await = Some(Arc::new(load_country_ranges()));
+    *state.asn_ranges.write().await = Some(Arc::new(load_asn_ranges()));
+    *state.datasets_ready.write().await = true;
+    Ok(())
+}
+
+async fn refresh_datasets_if_needed(state: &AppState, force: bool) -> Result<(), String> {
+    let _guard = state.dataset_refresh_lock.lock().await;
+    if !force {
+        ensure_datasets_loaded(state).await?;
+    }
+    let current_sha = current_dataset_sha();
+    let latest_sha = fetch_latest_commit_sha(&state.http_client).await;
+    if latest_sha.is_none() || latest_sha == current_sha {
+        return Ok(());
+    }
+    let latest_sha = latest_sha.unwrap();
+    let country_csv = fetch_text(&state.http_client, IPDB_COUNTRY_URL)
+        .await
+        .map_err(|e| e.to_string())?;
+    let asn_csv = fetch_text(&state.http_client, IPDB_ASN_URL)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    fs::create_dir_all("data").map_err(|e| e.to_string())?;
+    fs::write(format!("{}.tmp", COUNTRY_DB_PATH), country_csv).map_err(|e| e.to_string())?;
+    fs::write(format!("{}.tmp", ASN_DB_PATH), asn_csv).map_err(|e| e.to_string())?;
+    fs::rename(format!("{}.tmp", COUNTRY_DB_PATH), COUNTRY_DB_PATH).map_err(|e| e.to_string())?;
+    fs::rename(format!("{}.tmp", ASN_DB_PATH), ASN_DB_PATH).map_err(|e| e.to_string())?;
+    write_dataset_source(&latest_sha).map_err(|e| e.to_string())?;
+
+    *state.country_meta.write().await = None;
+    *state.country_ranges.write().await = None;
+    *state.asn_ranges.write().await = None;
+    *state.datasets_ready.write().await = false;
+    state.geo_cache.write().await.clear();
+    ensure_datasets_loaded(state).await?;
+    Ok(())
+}
+
+fn get_header_val(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers.get(name)?.to_str().ok().map(|s| s.to_string())
+}
+
+fn get_client_ip(headers: &HeaderMap, peer: &SocketAddr) -> String {
+    if let Some(ip) = get_header_val(headers, "cf-connecting-ip") {
+        return ip;
+    }
+    if let Some(ip) = get_header_val(headers, "true-client-ip") {
+        return ip;
+    }
+    if let Some(ip) = get_header_val(headers, "x-real-ip") {
+        return ip;
+    }
+    if let Some(xff) = get_header_val(headers, "x-forwarded-for") {
+        if let Some(first) = xff.split(',').next() {
+            let trimmed = first.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    peer.ip().to_string()
+}
+
+fn get_cf_info(headers: &HeaderMap) -> Option<CfInfo> {
+    let ray_full = get_header_val(headers, "cf-ray")?;
+
+    let (ray, dc_code) = if let Some(dash) = ray_full.rfind('-') {
+        (
+            Some(ray_full[..dash].to_string()),
+            Some(ray_full[dash + 1..].to_string()),
+        )
+    } else {
+        (Some(ray_full), None)
+    };
+
+    let dc_city = dc_code
+        .as_deref()
+        .and_then(cf_datacenter_city)
+        .map(|s| s.to_string());
+
+    let scheme = get_header_val(headers, "cf-visitor").and_then(|v| {
+        serde_json::from_str::<serde_json::Value>(&v)
+            .ok()
+            .and_then(|j| j.get("scheme")?.as_str().map(|s| s.to_string()))
+    });
+
+    let country = get_header_val(headers, "cf-ipcountry");
+    let warp = get_header_val(headers, "cf-warp-tag-id").is_some();
+
+    Some(CfInfo {
+        detected: true,
+        ray,
+        datacenter: dc_code,
+        datacenter_city: dc_city,
+        country,
+        scheme,
+        warp,
+    })
+}
+
+async fn lookup_geo(state: &AppState, ip: &str) -> Option<GeoData> {
+    if is_private_ip(ip) {
+        return None;
+    }
+
+    // Check cache
+    {
+        let cache = state.geo_cache.read().await;
+        if let Some(entry) = cache.get(ip) {
+            if entry.expires > Instant::now() {
+                return entry.data.clone();
+            }
+        }
+    }
+
+    if ensure_datasets_loaded(state).await.is_err() {
+        let mut cache = state.geo_cache.write().await;
+        cache.insert(
+            ip.to_string(),
+            GeoCacheEntry {
+                data: None,
+                expires: Instant::now() + GEO_FAIL_TTL,
+            },
+        );
+        return None;
+    }
+
+    let ip_num = ipv4_to_number(ip);
+    let country_ranges = {
+        let guard = state.country_ranges.read().await;
+        guard.clone()
+    };
+    let asn_ranges = {
+        let guard = state.asn_ranges.read().await;
+        guard.clone()
+    };
+    let country_meta = {
+        let guard = state.country_meta.read().await;
+        guard.clone()
+    };
+
+    let mut geo: Option<GeoData> = None;
+    if let Some(ip_num) = ip_num {
+        let country_row = country_ranges
+            .as_ref()
+            .and_then(|ranges| search_country_range(ranges.as_ref(), ip_num));
+        let asn_row = asn_ranges
+            .as_ref()
+            .and_then(|ranges| search_asn_range(ranges.as_ref(), ip_num));
+        let country_code = country_row
+            .map(|row| row.country_code.clone())
+            .unwrap_or_default();
+        if !country_code.is_empty() || asn_row.is_some() {
+            let meta = country_meta
+                .as_ref()
+                .and_then(|meta_map| country_meta_for(meta_map.as_ref(), &country_code));
+            let (org, asn) = asn_row
+                .map(|row| (row.org.clone(), row.asn.clone()))
+                .unwrap_or_default();
+            geo = Some(GeoData {
+                status: "success".to_string(),
+                message: String::new(),
+                continent: meta
+                    .as_ref()
+                    .map(|m| m.continent.clone())
+                    .unwrap_or_default(),
+                continent_code: meta
+                    .as_ref()
+                    .map(|m| m.continent_code.clone())
+                    .unwrap_or_default(),
+                country: meta
+                    .as_ref()
+                    .map(|m| m.country.clone())
+                    .unwrap_or_else(|| country_code.clone()),
+                country_code,
+                region: String::new(),
+                region_name: String::new(),
+                city: String::new(),
+                district: String::new(),
+                zip: String::new(),
+                lat: 0.0,
+                lon: 0.0,
+                timezone: String::new(),
+                offset: 0,
+                currency: meta
+                    .as_ref()
+                    .map(|m| m.currency.clone())
+                    .unwrap_or_default(),
+                isp: org.clone(),
+                org: org.clone(),
+                as_field: if asn.is_empty() {
+                    String::new()
+                } else {
+                    format!("AS{} {}", asn, org)
+                },
+                asname: org.clone(),
+                reverse: String::new(),
+                mobile: is_mobile_org(&org),
+                proxy: false,
+                hosting: is_hosting_org(&org),
+                query: ip.to_string(),
+            });
+        }
+    }
+
+    let mut cache = state.geo_cache.write().await;
+    cache.insert(
+        ip.to_string(),
+        GeoCacheEntry {
+            data: geo.clone(),
+            expires: Instant::now() + if geo.is_some() { GEO_TTL } else { GEO_FAIL_TTL },
+        },
+    );
+    geo
+}
+
+// ── User-Agent Parser ─────────────────────────────────────────────────────────
+
+fn parse_ua(raw: &str) -> UaInfo {
+    let mut info = UaInfo {
+        raw: raw.to_string(),
+        browser: "Unknown".to_string(),
+        browser_version: String::new(),
+        os: "Unknown".to_string(),
+        os_version: String::new(),
+        device: "Unknown".to_string(),
+        engine: "Unknown".to_string(),
+    };
+    if raw.is_empty() {
+        return info;
+    }
+
+    // Browser detection
+    let browser_patterns: &[(&str, &str)] = &[
+        (r"Edg(?:e|A|iOS)?/(\S+)", "Edge"),
+        (r"OPR/(\S+)", "Opera"),
+        (r"Vivaldi/(\S+)", "Vivaldi"),
+        (r"Brave/(\S+)", "Brave"),
+        (r"Firefox/(\S+)", "Firefox"),
+        (r"SamsungBrowser/(\S+)", "Samsung Internet"),
+        (r"UCBrowser/(\S+)", "UC Browser"),
+        (r"Chrome/(\S+)", "Chrome"),
+        (r"Version/(\S+).*Safari", "Safari"),
+        (r"curl/(\S+)", "curl"),
+        (r"Wget/(\S+)", "Wget"),
+        (r"HTTPie/(\S+)", "HTTPie"),
+        (r"(?i)Claude-User", "Claude"),
+    ];
+    for (pattern, name) in browser_patterns {
+        if let Some(caps) = regex_captures(raw, pattern) {
+            info.browser = name.to_string();
+            info.browser_version = caps.unwrap_or_default();
+            break;
+        }
+    }
+    if info.browser == "Unknown" && regex_test(raw, r"(?i)bot|crawl|spider|slurp|feed|index") {
+        info.browser = "Bot".to_string();
+    }
+
+    // Engine
+    if regex_test(raw, r"(?i)Trident") {
+        info.engine = "Trident".to_string();
+    } else if regex_test(raw, r"Gecko/\d") {
+        let before = raw.split("Gecko").next().unwrap_or("");
+        if !regex_test(before, r"(?i)like Gecko") {
+            info.engine = "Gecko".to_string();
+        }
+    }
+    if regex_test(raw, r"(?i)AppleWebKit") {
+        info.engine = "WebKit".to_string();
+    }
+    if matches!(
+        info.browser.as_str(),
+        "Chrome" | "Edge" | "Opera" | "Vivaldi" | "Brave"
+    ) {
+        info.engine = "Blink".to_string();
+    }
+
+    // OS
+    if let Some(v) = regex_capture_one(raw, r"Windows NT ([\d.]+)") {
+        info.os = "Windows".to_string();
+        info.os_version = match v.as_str() {
+            "10.0" => "10+".to_string(),
+            "6.3" => "8.1".to_string(),
+            "6.2" => "8".to_string(),
+            "6.1" => "7".to_string(),
+            "6.0" => "Vista".to_string(),
+            other => other.to_string(),
+        };
+    } else if let Some(v) = regex_capture_one(raw, r"Mac OS X ([\d._]+)") {
+        info.os = "macOS".to_string();
+        info.os_version = v.replace('_', ".");
+    } else if regex_test(raw, r"(?i)CrOS") {
+        info.os = "ChromeOS".to_string();
+    } else if let Some(v) = regex_capture_one(raw, r"Android ([\d.]+)") {
+        info.os = "Android".to_string();
+        info.os_version = v;
+    } else if let Some(v) = regex_capture_one(raw, r"iPhone OS ([\d_]+)") {
+        info.os = "iOS".to_string();
+        info.os_version = v.replace('_', ".");
+    } else if let Some(v) = regex_capture_one(raw, r"iPad.*OS ([\d_]+)") {
+        info.os = "iPadOS".to_string();
+        info.os_version = v.replace('_', ".");
+    } else if regex_test(raw, r"(?i)Linux") {
+        info.os = "Linux".to_string();
+    } else if regex_test(raw, r"(?i)FreeBSD") {
+        info.os = "FreeBSD".to_string();
+    }
+
+    // Device
+    if regex_test(raw, r"(?i)Mobile|Android.*Mobile|iPhone|iPod") {
+        info.device = "Mobile".to_string();
+    } else if regex_test(raw, r"(?i)iPad|Android(?!.*Mobile)|Tablet") {
+        info.device = "Tablet".to_string();
+    } else if regex_test(raw, r"(?i)Smart-?TV|Tizen|Web0S|NetCast") {
+        info.device = "Smart TV".to_string();
+    } else if regex_test(raw, r"(?i)bot|crawl|spider") {
+        info.device = "Bot".to_string();
+    } else if regex_test(raw, r"(?i)curl|wget|httpie|python-requests|go-http|java/") {
+        info.device = "CLI / Library".to_string();
+    } else {
+        info.device = "Desktop".to_string();
+    }
+
+    info
+}
+
+/// Simple regex test (returns true if pattern matches anywhere in text).
+fn regex_test(text: &str, pattern: &str) -> bool {
+    match regex_lite::Regex::new(pattern) {
+        Ok(re) => re.is_match(text),
+        Err(_) => false,
+    }
+}
+
+/// Capture group 1 from a regex, or None.
+fn regex_capture_one(text: &str, pattern: &str) -> Option<String> {
+    let re = regex_lite::Regex::new(pattern).ok()?;
+    let caps = re.captures(text)?;
+    caps.get(1).map(|m| m.as_str().to_string())
+}
+
+/// Returns Some(Some(group1)) if matched with a capture, Some(None) if matched without, None if no match.
+fn regex_captures(text: &str, pattern: &str) -> Option<Option<String>> {
+    let re = regex_lite::Regex::new(pattern).ok()?;
+    let caps = re.captures(text)?;
+    Some(caps.get(1).map(|m| m.as_str().to_string()))
+}
+
+// ── Helpers: formatting ───────────────────────────────────────────────────────
+
+fn format_uptime(dur: Duration) -> String {
+    let secs = dur.as_secs();
+    let d = secs / 86400;
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if d > 0 {
+        format!("{}d {}h {}m", d, h, m)
+    } else if h > 0 {
+        format!("{}h {}m {}s", h, m, s)
+    } else if m > 0 {
+        format!("{}m {}s", m, s)
+    } else {
+        format!("{}s", s)
+    }
+}
+
+fn parse_as_field(as_field: &str) -> (String, String) {
+    if let Some(space) = as_field.find(' ') {
+        (
+            as_field[..space].to_string(),
+            as_field[space + 1..].to_string(),
+        )
+    } else {
+        (as_field.to_string(), String::new())
+    }
+}
+
+fn now_iso() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn headers_to_json(headers: &HeaderMap) -> serde_json::Value {
@@ -116,198 +1067,1003 @@ fn headers_to_json(headers: &HeaderMap) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
-fn headers_to_html_rows(headers: &HeaderMap) -> String {
-    let mut pairs: Vec<(String, String)> = headers
-        .iter()
-        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut rows = String::new();
-    for (k, v) in &pairs {
-        rows.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td></tr>",
-            html_escape(k),
-            html_escape(v),
-        ));
+fn flat_headers_from_json(val: &serde_json::Value) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    if let Some(obj) = val.as_object() {
+        for (k, v) in obj {
+            pairs.push((k.clone(), v.as_str().unwrap_or("").to_string()));
+        }
     }
-    rows
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
+// ── Build payload ─────────────────────────────────────────────────────────────
 
-async fn handle_root(
-    State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-) -> Html<String> {
-    let ts = now_rfc3339();
-    let host = hostname();
-    let header_rows = headers_to_html_rows(&headers);
+async fn build_payload(
+    headers: &HeaderMap,
+    peer: &SocketAddr,
+    url: &str,
+    method: &str,
+    state: &AppState,
+) -> Payload {
+    let ip = get_client_ip(headers, peer);
+    let geo = lookup_geo(state, &ip).await;
+    let ua_raw = get_header_val(headers, "user-agent").unwrap_or_default();
+    let ua = parse_ua(&ua_raw);
+    let cf = get_cf_info(headers);
 
-    let body = format!(
+    let langs: Vec<String> = get_header_val(headers, "accept-language")
+        .unwrap_or_default()
+        .split(',')
+        .map(|l| l.split(';').next().unwrap_or("").trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let enc: Vec<String> = get_header_val(headers, "accept-encoding")
+        .unwrap_or_default()
+        .split(',')
+        .map(|e| e.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let dnt = get_header_val(headers, "dnt").as_deref() == Some("1");
+    let gpc = get_header_val(headers, "sec-gpc").as_deref() == Some("1");
+
+    let uptime = state.start_time.elapsed();
+    let as_info = geo.as_ref().map(|g| parse_as_field(&g.as_field));
+
+    let host_header = get_header_val(headers, "host").unwrap_or_default();
+    let protocol = cf
+        .as_ref()
+        .and_then(|c| c.scheme.clone())
+        .unwrap_or_else(|| "http".to_string());
+
+    Payload {
+        app: state.app_name.clone(),
+        ferry: "⛵ Ferry v{{FERRY_VERSION}}".to_string(),
+        timestamp: now_iso(),
+        client: ClientInfo {
+            ip: ip.clone(),
+            ip_version: ip_version(&ip).to_string(),
+            hostname: geo.as_ref().and_then(|g| {
+                if g.reverse.is_empty() {
+                    None
+                } else {
+                    Some(g.reverse.clone())
+                }
+            }),
+            geo: geo.as_ref().map(|g| GeoPayload {
+                continent: g.continent.clone(),
+                continent_code: g.continent_code.clone(),
+                country: g.country.clone(),
+                country_code: g.country_code.clone(),
+                flag: country_flag(&g.country_code),
+                region: g.region.clone(),
+                region_name: g.region_name.clone(),
+                city: g.city.clone(),
+                district: g.district.clone(),
+                zip: g.zip.clone(),
+                lat: g.lat,
+                lon: g.lon,
+                timezone: g.timezone.clone(),
+                utc_offset: g.offset,
+                currency: g.currency.clone(),
+            }),
+            network: as_info.as_ref().map(|(asn, as_name)| NetworkPayload {
+                isp: geo.as_ref().map(|g| g.isp.clone()).unwrap_or_default(),
+                org: geo.as_ref().map(|g| g.org.clone()).unwrap_or_default(),
+                asn: asn.clone(),
+                as_name: as_name.clone(),
+            }),
+            privacy: geo.as_ref().map(|g| PrivacyPayload {
+                proxy: g.proxy,
+                hosting: g.hosting,
+                mobile: g.mobile,
+            }),
+            user_agent: ua,
+            languages: langs,
+            encoding: enc,
+            dnt,
+            gpc,
+        },
+        cloudflare: cf,
+        request: RequestPayload {
+            method: method.to_string(),
+            url: url.to_string(),
+            protocol,
+            host: host_header,
+        },
+        server: ServerPayload {
+            hostname: hostname(),
+            port: state.port,
+            uptime: uptime.as_secs(),
+            uptime_human: format_uptime(uptime),
+            runtime: format!("Rust {}", env!("CARGO_PKG_VERSION")),
+            platform: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+        },
+        headers: headers_to_json(headers),
+    }
+}
+
+// ── HTML builder ──────────────────────────────────────────────────────────────
+
+fn row(label: &str, value: impl Into<String>, cls: Option<&str>) -> String {
+    let value = value.into();
+    match cls {
+        Some(c) => format!(
+            "<tr><td>{}</td><td class=\"{}\">{}</td></tr>",
+            html_escape(label),
+            c,
+            value
+        ),
+        None => format!("<tr><td>{}</td><td>{}</td></tr>", html_escape(label), value),
+    }
+}
+
+fn badge(text: &str, color: &str) -> String {
+    format!(
+        "<span class=\"badge badge-{}\">{}</span>",
+        color,
+        html_escape(text)
+    )
+}
+
+fn build_html(p: &Payload) -> String {
+    let g = p.client.geo.as_ref();
+    let n = p.client.network.as_ref();
+    let pr = p.client.privacy.as_ref();
+    let cf = p.cloudflare.as_ref();
+    let ua = &p.client.user_agent;
+
+    // Hero
+    let hero_location = if let Some(g) = g {
+        let city_part = if !g.city.is_empty() {
+            if !g.country.is_empty() {
+                format!("{}, {}", html_escape(&g.city), html_escape(&g.country))
+            } else {
+                html_escape(&g.city)
+            }
+        } else if !g.region_name.is_empty() {
+            html_escape(&g.region_name)
+        } else {
+            html_escape(&g.country)
+        };
+        format!("<span class=\"ip-flag\">{}</span> {}", g.flag, city_part)
+    } else if let Some(cf) = cf {
+        if let Some(ref cc) = cf.country {
+            format!(
+                "<span class=\"ip-flag\">{}</span> {}",
+                country_flag(cc),
+                html_escape(cc)
+            )
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    let hero_hostname = p
+        .client
+        .hostname
+        .as_ref()
+        .map(|h| format!("<div class=\"ip-hostname\">{}</div>", html_escape(h)))
+        .unwrap_or_default();
+
+    // Location rows
+    let mut location_rows = String::new();
+    if let Some(g) = g {
+        location_rows += &row(
+            "Continent",
+            &format!(
+                "{} ({})",
+                html_escape(&g.continent),
+                html_escape(&g.continent_code)
+            ),
+            None,
+        );
+        location_rows += &row(
+            "Country",
+            &format!(
+                "{} {} ({})",
+                g.flag,
+                html_escape(&g.country),
+                html_escape(&g.country_code)
+            ),
+            None,
+        );
+        if !g.region_name.is_empty() {
+            location_rows += &row("Region", &html_escape(&g.region_name), None);
+        }
+        if !g.city.is_empty() {
+            location_rows += &row("City", &html_escape(&g.city), None);
+        }
+        if !g.district.is_empty() {
+            location_rows += &row("District", &html_escape(&g.district), None);
+        }
+        if !g.zip.is_empty() {
+            location_rows += &row("Postal / ZIP", &html_escape(&g.zip), None);
+        }
+        location_rows += &row(
+            "Coordinates",
+            &format!(
+                "<a class=\"coord-link\" href=\"https://www.openstreetmap.org/?mlat={}&mlon={}#map=12/{}/{}\" target=\"_blank\" rel=\"noopener\">{}, {}</a>",
+                g.lat, g.lon, g.lat, g.lon, g.lat, g.lon
+            ),
+            None,
+        );
+        let offset_hours = g.utc_offset as f64 / 3600.0;
+        let offset_sign = if offset_hours >= 0.0 { "+" } else { "" };
+        location_rows += &row(
+            "Timezone",
+            &format!(
+                "{} (UTC{}{})",
+                html_escape(&g.timezone),
+                offset_sign,
+                offset_hours
+            ),
+            None,
+        );
+        if !g.currency.is_empty() {
+            location_rows += &row("Currency", &html_escape(&g.currency), None);
+        }
+    }
+
+    // Network rows
+    let mut network_rows = String::new();
+    if let Some(n) = n {
+        network_rows += &row("ISP", &html_escape(&n.isp), None);
+        if !n.org.is_empty() && n.org != n.isp {
+            network_rows += &row("Organization", &html_escape(&n.org), None);
+        }
+        network_rows += &row(
+            "AS Number",
+            &format!("<span class=\"mono\">{}</span>", html_escape(&n.asn)),
+            None,
+        );
+        if !n.as_name.is_empty() {
+            network_rows += &row("AS Name", &html_escape(&n.as_name), None);
+        }
+    }
+    network_rows += &row("IP Version", &html_escape(&p.client.ip_version), None);
+    if let Some(ref h) = p.client.hostname {
+        network_rows += &row(
+            "Reverse DNS",
+            &format!("<span class=\"mono\">{}</span>", html_escape(h)),
+            None,
+        );
+    }
+
+    // Privacy rows
+    let mut privacy_rows = String::new();
+    if let Some(pr) = pr {
+        let (conn_type, conn_color) = if pr.hosting {
+            ("Datacenter / Hosting", "yellow")
+        } else if pr.mobile {
+            ("Mobile Network", "blue")
+        } else {
+            ("Residential", "green")
+        };
+        let conn_badge = badge(conn_type, conn_color);
+        privacy_rows += &row("Connection Type", conn_badge, None);
+        let proxy_badge = if pr.proxy {
+            badge("Detected", "red")
+        } else {
+            badge("Not Detected", "green")
+        };
+        privacy_rows += &row("Proxy / VPN", proxy_badge, None);
+        let hosting_badge = if pr.hosting {
+            badge("Yes", "yellow")
+        } else {
+            badge("No", "green")
+        };
+        privacy_rows += &row("Hosting / DC", hosting_badge, None);
+        let mobile_badge = if pr.mobile {
+            badge("Yes", "blue")
+        } else {
+            badge("No", "gray")
+        };
+        privacy_rows += &row("Mobile Network", mobile_badge, None);
+    }
+
+    // Client rows
+    let mut client_rows = String::new();
+    if ua.browser != "Unknown" {
+        let bv = if ua.browser_version.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", html_escape(&ua.browser_version))
+        };
+        client_rows += &row(
+            "Browser",
+            &format!("{}{}", html_escape(&ua.browser), bv),
+            None,
+        );
+    } else {
+        let truncated = if ua.raw.len() > 80 {
+            format!("{}…", &ua.raw[..80])
+        } else {
+            ua.raw.clone()
+        };
+        client_rows += &row(
+            "Browser",
+            &format!(
+                "<span class=\"unavailable\">{}</span>",
+                html_escape(&truncated)
+            ),
+            None,
+        );
+    }
+    if ua.engine != "Unknown" {
+        client_rows += &row("Engine", &html_escape(&ua.engine), None);
+    }
+    if ua.os != "Unknown" {
+        let ov = if ua.os_version.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", html_escape(&ua.os_version))
+        };
+        client_rows += &row("OS", &format!("{}{}", html_escape(&ua.os), ov), None);
+    } else {
+        client_rows += &row("OS", "<span class=\"unavailable\">Unknown</span>", None);
+    }
+    client_rows += &row("Device", &html_escape(&ua.device), None);
+    if !p.client.languages.is_empty() {
+        client_rows += &row(
+            "Languages",
+            &html_escape(&p.client.languages.join(", ")),
+            None,
+        );
+    }
+    if !p.client.encoding.is_empty() {
+        client_rows += &row(
+            "Encoding",
+            &html_escape(&p.client.encoding.join(", ")),
+            None,
+        );
+    }
+    client_rows += &row(
+        "Do Not Track",
+        if p.client.dnt {
+            badge("Enabled", "green")
+        } else {
+            badge("Disabled", "gray")
+        },
+        None,
+    );
+    if p.client.gpc {
+        let gpc_badge = badge("Enabled", "green");
+        client_rows += &row("Global Privacy", gpc_badge, None);
+    }
+
+    // Cloudflare section
+    let cf_section = if let Some(cf) = cf {
+        let mut cf_rows = String::new();
+        if let Some(ref dc) = cf.datacenter {
+            let city_part = cf
+                .datacenter_city
+                .as_ref()
+                .map(|c| format!(" — {}", html_escape(c)))
+                .unwrap_or_default();
+            cf_rows += &row(
+                "Datacenter",
+                &format!(
+                    "<span class=\"mono\">{}</span>{}",
+                    html_escape(dc),
+                    city_part
+                ),
+                None,
+            );
+        }
+        if let Some(ref ray) = cf.ray {
+            cf_rows += &row(
+                "Ray ID",
+                &format!("<span class=\"mono\">{}</span>", html_escape(ray)),
+                None,
+            );
+        }
+        if let Some(ref cc) = cf.country {
+            cf_rows += &row(
+                "Country",
+                &format!("{} {}", country_flag(cc), html_escape(cc)),
+                None,
+            );
+        }
+        if let Some(ref scheme) = cf.scheme {
+            cf_rows += &row("Scheme", &html_escape(&scheme.to_uppercase()), None);
+        }
+        let warp_badge = if cf.warp {
+            badge("Active", "purple")
+        } else {
+            badge("Inactive", "gray")
+        };
+        cf_rows += &row("WARP", warp_badge, None);
+        format!(
+            "<h2>Cloudflare</h2><table><tbody>{}</tbody></table>\n    <p class=\"section-note\">Request proxied through Cloudflare — client TLS terminates at the edge</p>",
+            cf_rows
+        )
+    } else {
+        String::new()
+    };
+
+    // Request rows
+    let req_rows = row(
+        "Method",
+        &format!(
+            "<span class=\"mono\">{}</span>",
+            html_escape(&p.request.method)
+        ),
+        None,
+    ) + &row(
+        "URL",
+        &format!(
+            "<span class=\"mono\">{}</span>",
+            html_escape(&p.request.url)
+        ),
+        None,
+    ) + &row(
+        "Protocol",
+        &html_escape(&p.request.protocol.to_uppercase()),
+        None,
+    ) + &row("Host", &html_escape(&p.request.host), None)
+        + &row(
+            "Timestamp",
+            &format!("<span class=\"mono\">{}</span>", html_escape(&p.timestamp)),
+            None,
+        );
+
+    // Server rows
+    let srv_rows = row(
+        "Hostname",
+        &format!(
+            "<span class=\"mono\">{}</span>",
+            html_escape(&p.server.hostname)
+        ),
+        None,
+    ) + &row("Port", &p.server.port.to_string(), None)
+        + &row("Uptime", &html_escape(&p.server.uptime_human), None)
+        + &row("Runtime", &html_escape(&p.server.runtime), None)
+        + &row(
+            "Platform",
+            &format!(
+                "{} / {}",
+                html_escape(&p.server.platform),
+                html_escape(&p.server.arch)
+            ),
+            None,
+        );
+
+    // Headers
+    let sorted_headers = flat_headers_from_json(&p.headers);
+    let header_rows: String = sorted_headers
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "<tr><td>{}</td><td class=\"mono\">{}</td></tr>",
+                html_escape(k),
+                html_escape(v)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{app}</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="container">
     <h1>{app}</h1>
-    <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></p>
+    <p class="subtitle">Built with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">⛵ Ferry</a></p>
 
-    <h2>Request</h2>
-    <table>
-      <tr><td>Method</td><td>GET</td></tr>
-      <tr><td>URL</td><td>/</td></tr>
-      <tr><td>Protocol</td><td>HTTP/1.1</td></tr>
-      <tr><td>Client IP</td><td>{ip}</td></tr>
-    </table>
-
-    <h2>Server</h2>
-    <table>
-      <tr><td>Hostname</td><td>{host}</td></tr>
-      <tr><td>Port</td><td>{port}</td></tr>
-      <tr><td>Timestamp</td><td>{ts}</td></tr>
-    </table>
-
-    <h2>Headers</h2>
-    <table>{header_rows}</table>
-
-    <div class="formats">
-      <a href="/" class="active">[HTML]</a>
-      <a href="/json">[JSON]</a>
-      <a href="/xml">[XML]</a>
-      <a href="/text">[Text]</a>
+    <div class="ip-hero">
+      <div class="ip-label">Your IP Address</div>
+      <div class="ip-address">{ip}</div>
+      {hero_loc}
+      {hero_host}
     </div>
 
-    <footer>Built with <a href="https://github.com/gastonmorixe/ferry">⛵ Ferry</a></footer>
+    {location_section}
+
+    {network_section}
+
+    {privacy_section}
+
+    <h2>Client</h2>
+    <table><tbody>{client_rows}</tbody></table>
+
+    {cf_section}
+
+    <h2>Request</h2>
+    <table><tbody>{req_rows}</tbody></table>
+
+    <h2>Server</h2>
+    <table><tbody>{srv_rows}</tbody></table>
+
+    <details>
+      <summary>Headers <span class="count">({header_count})</span></summary>
+      <table><tbody>
+        {header_rows}
+      </tbody></table>
+    </details>
+
+    <div class="formats">
+      <a class="active" href="/">HTML</a>
+      <a href="/json">JSON</a>
+      <a href="/xml">XML</a>
+      <a href="/text">Text</a>
+    </div>
+
+    <footer>Built with <a href="https://github.com/gastonmorixe/ferry" target="_blank" rel="noopener">⛵ Ferry</a></footer>
   </div>
 </body>
 </html>"#,
-        app = html_escape(&state.app_name),
-        ip = html_escape(&peer.to_string()),
-        host = html_escape(&host),
-        port = state.port,
-        ts = html_escape(&ts),
+        app = html_escape(&p.app),
+        ip = html_escape(&p.client.ip),
+        hero_loc = if hero_location.is_empty() {
+            String::new()
+        } else {
+            format!("<div class=\"ip-meta\">{}</div>", hero_location)
+        },
+        hero_host = hero_hostname,
+        location_section = if g.is_some() {
+            format!(
+                "<h2>Location</h2>\n    <table><tbody>{}</tbody></table>",
+                location_rows
+            )
+        } else {
+            String::new()
+        },
+        network_section = if !network_rows.is_empty() {
+            format!(
+                "<h2>Network</h2>\n    <table><tbody>{}</tbody></table>",
+                network_rows
+            )
+        } else {
+            String::new()
+        },
+        privacy_section = if pr.is_some() {
+            format!(
+                "<h2>Privacy &amp; Security</h2>\n    <table><tbody>{}</tbody></table>",
+                privacy_rows
+            )
+        } else {
+            String::new()
+        },
+        client_rows = client_rows,
+        cf_section = cf_section,
+        req_rows = req_rows,
+        srv_rows = srv_rows,
+        header_count = sorted_headers.len(),
         header_rows = header_rows,
-    );
-
-    Html(body)
+    )
 }
 
-async fn handle_json(
-    State(state): State<AppState>,
+// ── XML builder ───────────────────────────────────────────────────────────────
+
+fn xel(tag: &str, val: &str) -> String {
+    if val.is_empty() {
+        return format!("  <{} />", tag);
+    }
+    format!("  <{}>{}</{}>", tag, xml_escape(val), tag)
+}
+
+fn xel_bool(tag: &str, val: bool) -> String {
+    format!("  <{}>{}</{}>", tag, val, tag)
+}
+
+fn xel_num<T: std::fmt::Display>(tag: &str, val: T) -> String {
+    format!("  <{}>{}</{}>", tag, val, tag)
+}
+
+fn xel_opt(tag: &str, val: &Option<String>) -> String {
+    match val {
+        Some(v) if !v.is_empty() => format!("  <{}>{}</{}>", tag, xml_escape(v), tag),
+        _ => format!("  <{} />", tag),
+    }
+}
+
+fn build_xml(p: &Payload) -> String {
+    let g = p.client.geo.as_ref();
+    let n = p.client.network.as_ref();
+    let pr = p.client.privacy.as_ref();
+    let cf = p.cloudflare.as_ref();
+    let hdrs = flat_headers_from_json(&p.headers);
+    let hdr_xml: String = hdrs
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "      <header name=\"{}\">{}</header>",
+                xml_escape(k),
+                xml_escape(v)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let geo_xml = if let Some(g) = g {
+        format!(
+            "    <geo>\n    {}\n    {}\n    {}\n    {}\n    {}\n    {}\n    {}\n    {}\n    {}\n    {}\n    {}\n    {}\n    {}\n    {}\n    </geo>",
+            xel("continent", &g.continent),
+            xel("continentCode", &g.continent_code),
+            xel("country", &g.country),
+            xel("countryCode", &g.country_code),
+            xel("flag", &g.flag),
+            xel("regionName", &g.region_name),
+            xel("city", &g.city),
+            xel("district", &g.district),
+            xel("zip", &g.zip),
+            xel_num("lat", g.lat),
+            xel_num("lon", g.lon),
+            xel("timezone", &g.timezone),
+            xel_num("utcOffset", g.utc_offset),
+            xel("currency", &g.currency)
+        )
+    } else {
+        "    <geo />".to_string()
+    };
+
+    let net_xml = if let Some(n) = n {
+        format!(
+            "    <network>\n    {}\n    {}\n    {}\n    {}\n    </network>",
+            xel("isp", &n.isp),
+            xel("org", &n.org),
+            xel("asn", &n.asn),
+            xel("asName", &n.as_name)
+        )
+    } else {
+        "    <network />".to_string()
+    };
+
+    let priv_xml = if let Some(pr) = pr {
+        format!(
+            "    <privacy>\n    {}\n    {}\n    {}\n    </privacy>",
+            xel_bool("proxy", pr.proxy),
+            xel_bool("hosting", pr.hosting),
+            xel_bool("mobile", pr.mobile)
+        )
+    } else {
+        "    <privacy />".to_string()
+    };
+
+    let cf_xml = if let Some(cf) = cf {
+        format!(
+            "  <cloudflare>\n  {}\n  {}\n  {}\n  {}\n  {}\n  {}\n  {}\n  </cloudflare>",
+            xel_bool("detected", true),
+            xel_opt("ray", &cf.ray),
+            xel_opt("datacenter", &cf.datacenter),
+            xel_opt("datacenterCity", &cf.datacenter_city),
+            xel_opt("country", &cf.country),
+            xel_opt("scheme", &cf.scheme),
+            xel_bool("warp", cf.warp)
+        )
+    } else {
+        "  <cloudflare />".to_string()
+    };
+
+    let ua = &p.client.user_agent;
+    let lang_xml: String = p
+        .client
+        .languages
+        .iter()
+        .map(|l| format!("<lang>{}</lang>", xml_escape(l)))
+        .collect::<Vec<_>>()
+        .join("");
+    let enc_xml: String = p
+        .client
+        .encoding
+        .iter()
+        .map(|e| format!("<enc>{}</enc>", xml_escape(e)))
+        .collect::<Vec<_>>()
+        .join("");
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<response>
+  <app>{app}</app>
+  <ferry>{ferry}</ferry>
+  <timestamp>{ts}</timestamp>
+  <client>
+  {ip}
+  {ipv}
+  {hostname}
+{geo}
+{net}
+{priv_section}
+    <userAgent>
+    {ua_raw}
+    {ua_browser}
+    {ua_bv}
+    {ua_os}
+    {ua_ov}
+    {ua_dev}
+    {ua_eng}
+    </userAgent>
+    <languages>{lang}</languages>
+    <encoding>{enc}</encoding>
+  {dnt}
+  {gpc}
+  </client>
+{cf}
+  <request>
+  {method}
+  {url}
+  {protocol}
+  {host}
+  </request>
+  <server>
+  {s_host}
+  {s_port}
+  {s_up}
+  {s_uph}
+  {s_rt}
+  {s_plat}
+  {s_arch}
+  </server>
+  <headers>
+{hdrs}
+  </headers>
+</response>"#,
+        app = xml_escape(&p.app),
+        ferry = xml_escape(&p.ferry),
+        ts = xml_escape(&p.timestamp),
+        ip = xel("ip", &p.client.ip),
+        ipv = xel("ipVersion", &p.client.ip_version),
+        hostname = xel_opt("hostname", &p.client.hostname),
+        geo = geo_xml,
+        net = net_xml,
+        priv_section = priv_xml,
+        ua_raw = xel("raw", &ua.raw),
+        ua_browser = xel("browser", &ua.browser),
+        ua_bv = xel("browserVersion", &ua.browser_version),
+        ua_os = xel("os", &ua.os),
+        ua_ov = xel("osVersion", &ua.os_version),
+        ua_dev = xel("device", &ua.device),
+        ua_eng = xel("engine", &ua.engine),
+        lang = lang_xml,
+        enc = enc_xml,
+        dnt = xel_bool("dnt", p.client.dnt),
+        gpc = xel_bool("gpc", p.client.gpc),
+        cf = cf_xml,
+        method = xel("method", &p.request.method),
+        url = xel("url", &p.request.url),
+        protocol = xel("protocol", &p.request.protocol),
+        host = xel("host", &p.request.host),
+        s_host = xel("hostname", &p.server.hostname),
+        s_port = xel_num("port", p.server.port),
+        s_up = xel_num("uptime", p.server.uptime),
+        s_uph = xel("uptimeHuman", &p.server.uptime_human),
+        s_rt = xel("runtime", &p.server.runtime),
+        s_plat = xel("platform", &p.server.platform),
+        s_arch = xel("arch", &p.server.arch),
+        hdrs = hdr_xml,
+    )
+}
+
+// ── Text builder ──────────────────────────────────────────────────────────────
+
+fn build_text(p: &Payload) -> String {
+    let g = p.client.geo.as_ref();
+    let n = p.client.network.as_ref();
+    let pr = p.client.privacy.as_ref();
+    let cf = p.cloudflare.as_ref();
+    let ua = &p.client.user_agent;
+
+    let mut t = format!("# {}\n\n", p.app);
+    t += &format!("Your IP: {}\n", p.client.ip);
+    if let Some(ref h) = p.client.hostname {
+        t += &format!("Hostname: {}\n", h);
+    }
+    t += &format!("IP Version: {}\n", p.client.ip_version);
+
+    if let Some(g) = g {
+        t += "\n## Location\n";
+        t += &format!("  Continent:   {} ({})\n", g.continent, g.continent_code);
+        t += &format!(
+            "  Country:     {} {} ({})\n",
+            g.flag, g.country, g.country_code
+        );
+        if !g.region_name.is_empty() {
+            t += &format!("  Region:      {}\n", g.region_name);
+        }
+        if !g.city.is_empty() {
+            t += &format!("  City:        {}\n", g.city);
+        }
+        if !g.district.is_empty() {
+            t += &format!("  District:    {}\n", g.district);
+        }
+        if !g.zip.is_empty() {
+            t += &format!("  Postal/ZIP:  {}\n", g.zip);
+        }
+        t += &format!("  Coordinates: {}, {}\n", g.lat, g.lon);
+        let offset_hours = g.utc_offset as f64 / 3600.0;
+        let sign = if offset_hours >= 0.0 { "+" } else { "" };
+        t += &format!(
+            "  Timezone:    {} (UTC{}{})\n",
+            g.timezone, sign, offset_hours
+        );
+        if !g.currency.is_empty() {
+            t += &format!("  Currency:    {}\n", g.currency);
+        }
+    }
+
+    if let Some(n) = n {
+        t += "\n## Network\n";
+        t += &format!("  ISP:          {}\n", n.isp);
+        if !n.org.is_empty() && n.org != n.isp {
+            t += &format!("  Organization: {}\n", n.org);
+        }
+        t += &format!("  AS Number:    {}\n", n.asn);
+        if !n.as_name.is_empty() {
+            t += &format!("  AS Name:      {}\n", n.as_name);
+        }
+    }
+
+    if let Some(pr) = pr {
+        t += "\n## Privacy\n";
+        let conn_type = if pr.hosting {
+            "Datacenter / Hosting"
+        } else if pr.mobile {
+            "Mobile Network"
+        } else {
+            "Residential"
+        };
+        t += &format!("  Type:     {}\n", conn_type);
+        t += &format!(
+            "  Proxy:    {}\n",
+            if pr.proxy { "Detected" } else { "Not detected" }
+        );
+        t += &format!("  Hosting:  {}\n", if pr.hosting { "Yes" } else { "No" });
+        t += &format!("  Mobile:   {}\n", if pr.mobile { "Yes" } else { "No" });
+    }
+
+    t += "\n## Client\n";
+    let bv = if ua.browser_version.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", ua.browser_version)
+    };
+    t += &format!("  Browser:    {}{}\n", ua.browser, bv);
+    if ua.engine != "Unknown" {
+        t += &format!("  Engine:     {}\n", ua.engine);
+    }
+    let ov = if ua.os_version.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", ua.os_version)
+    };
+    t += &format!("  OS:         {}{}\n", ua.os, ov);
+    t += &format!("  Device:     {}\n", ua.device);
+    if !p.client.languages.is_empty() {
+        t += &format!("  Languages:  {}\n", p.client.languages.join(", "));
+    }
+    if !p.client.encoding.is_empty() {
+        t += &format!("  Encoding:   {}\n", p.client.encoding.join(", "));
+    }
+    t += &format!(
+        "  DNT:        {}\n",
+        if p.client.dnt { "Enabled" } else { "Disabled" }
+    );
+    if p.client.gpc {
+        t += "  GPC:        Enabled\n";
+    }
+    t += &format!("  User-Agent: {}\n", ua.raw);
+
+    if let Some(cf) = cf {
+        t += "\n## Cloudflare\n";
+        if let Some(ref dc) = cf.datacenter {
+            let city_part = cf
+                .datacenter_city
+                .as_ref()
+                .map(|c| format!(" ({})", c))
+                .unwrap_or_default();
+            t += &format!("  Datacenter: {}{}\n", dc, city_part);
+        }
+        if let Some(ref ray) = cf.ray {
+            t += &format!("  Ray ID:     {}\n", ray);
+        }
+        if let Some(ref cc) = cf.country {
+            t += &format!("  Country:    {} {}\n", country_flag(cc), cc);
+        }
+        if let Some(ref scheme) = cf.scheme {
+            t += &format!("  Scheme:     {}\n", scheme.to_uppercase());
+        }
+        t += &format!(
+            "  WARP:       {}\n",
+            if cf.warp { "Active" } else { "Inactive" }
+        );
+    }
+
+    t += "\n## Request\n";
+    t += &format!("  Method:    {}\n", p.request.method);
+    t += &format!("  URL:       {}\n", p.request.url);
+    t += &format!("  Protocol:  {}\n", p.request.protocol.to_uppercase());
+    t += &format!("  Host:      {}\n", p.request.host);
+    t += &format!("  Timestamp: {}\n", p.timestamp);
+
+    t += "\n## Server\n";
+    t += &format!("  Hostname: {}\n", p.server.hostname);
+    t += &format!("  Port:     {}\n", p.server.port);
+    t += &format!("  Uptime:   {}\n", p.server.uptime_human);
+    t += &format!("  Runtime:  {}\n", p.server.runtime);
+    t += &format!("  Platform: {} / {}\n", p.server.platform, p.server.arch);
+
+    t += "\n## Headers\n";
+    let hdrs = flat_headers_from_json(&p.headers);
+    for (k, v) in &hdrs {
+        t += &format!("  {}: {}\n", k, v);
+    }
+
+    t += &format!(
+        "\n---\nBuilt with {} — https://github.com/gastonmorixe/ferry\nFormats: / | /json | /xml | /text\n",
+        p.ferry
+    );
+    t
+}
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
+async fn handle_root(
+    State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let body = JsonBody {
-        app: state.app_name.clone(),
-        ferry: "⛵ Ferry v{{FERRY_VERSION}}".to_string(),
-        timestamp: now_rfc3339(),
-        server: ServerInfo {
-            hostname: hostname(),
-            port: state.port,
-        },
-        request: RequestInfo {
-            method: "GET".to_string(),
-            url: "/json".to_string(),
-            protocol: "HTTP/1.1".to_string(),
-            ip: peer.to_string(),
-            headers: headers_to_json(&headers),
-        },
-    };
+    let payload = build_payload(&headers, &peer, "/", "GET", &state).await;
+    let mut resp_headers = HeaderMap::new();
+    resp_headers.insert(
+        header::CONTENT_TYPE,
+        "text/html; charset=utf-8".parse().unwrap(),
+    );
+    resp_headers.insert(
+        header::HeaderName::from_static("accept-ch"),
+        "Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Platform, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Full-Version, Sec-CH-UA-Platform-Version".parse().unwrap(),
+    );
+    (StatusCode::OK, resp_headers, build_html(&payload))
+}
+
+async fn handle_json(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let payload = build_payload(&headers, &peer, "/json", "GET", &state).await;
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string_pretty(&body).expect("JSON serialization failed"),
+        serde_json::to_string_pretty(&payload).expect("JSON serialization failed"),
     )
 }
 
 async fn handle_xml(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let ts = now_rfc3339();
-    let host = hostname();
-
-    let header_xml: String = {
-        let mut pairs: Vec<(String, String)> = headers
-            .iter()
-            .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
-            .collect();
-        pairs.sort_by(|a, b| a.0.cmp(&b.0));
-        pairs
-            .iter()
-            .map(|(k, v)| format!("    <header name=\"{}\">{}</header>\n", html_escape(k), html_escape(v)))
-            .collect()
-    };
-
-    let xml = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-<response>\n\
-  <app>{app}</app>\n\
-  <ferry>⛵ Ferry v{{FERRY_VERSION}}</ferry>\n\
-  <timestamp>{ts}</timestamp>\n\
-  <server>\n\
-    <hostname>{host}</hostname>\n\
-    <port>{port}</port>\n\
-  </server>\n\
-  <request>\n\
-    <method>GET</method>\n\
-    <url>/xml</url>\n\
-    <protocol>HTTP/1.1</protocol>\n\
-    <ip>{ip}</ip>\n\
-    <headers>\n\
-{header_xml}    </headers>\n\
-  </request>\n\
-</response>\n",
-        app = html_escape(&state.app_name),
-        ts = html_escape(&ts),
-        host = html_escape(&host),
-        port = state.port,
-        ip = html_escape(&peer.to_string()),
-        header_xml = header_xml,
-    );
-
+    let payload = build_payload(&headers, &peer, "/xml", "GET", &state).await;
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
-        xml,
+        build_xml(&payload),
     )
 }
 
 async fn handle_text(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
-    let ts = now_rfc3339();
-    let host = hostname();
-    let text = format!(
-        "# {app}\n\nBuilt with ⛵ Ferry v{{FERRY_VERSION}}\n\n\
-## Server\n\n\
-- Hostname: {host}\n\
-- Port:     {port}\n\
-- Time:     {ts}\n\n\
-## Request\n\n\
-- Method:   GET\n\
-- URL:      /text\n\
-- IP:       {ip}\n\n\
----\n\
-Built with ⛵ Ferry v{{FERRY_VERSION}} <https://github.com/gastonmorixe/ferry>\n",
-        app = state.app_name,
-        host = host,
-        port = state.port,
-        ts = ts,
-        ip = peer,
-    );
+    let payload = build_payload(&headers, &peer, "/text", "GET", &state).await;
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        text,
+        build_text(&payload),
     )
 }
 
@@ -334,10 +2090,42 @@ async fn main() {
 
     let app_name = "{{APP_NAME}}".to_string();
 
-    let state = AppState {
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(2500))
+        .build()
+        .expect("failed to build HTTP client");
+
+    let state = Arc::new(AppState {
         app_name: app_name.clone(),
         port,
-    };
+        start_time: Instant::now(),
+        geo_cache: RwLock::new(HashMap::new()),
+        country_meta: RwLock::new(None),
+        country_ranges: RwLock::new(None),
+        asn_ranges: RwLock::new(None),
+        datasets_ready: RwLock::new(false),
+        dataset_refresh_lock: Mutex::new(()),
+        http_client,
+    });
+
+    if let Err(err) = ensure_datasets_loaded(state.as_ref()).await {
+        eprintln!("dataset load failed: {err}");
+    }
+    {
+        let refresh_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(err) = refresh_datasets_if_needed(refresh_state.as_ref(), false).await {
+                eprintln!("dataset refresh failed: {err}");
+            }
+            let mut interval = tokio::time::interval(Duration::from_millis(IPDB_REFRESH_MS));
+            loop {
+                interval.tick().await;
+                if let Err(err) = refresh_datasets_if_needed(refresh_state.as_ref(), false).await {
+                    eprintln!("dataset refresh failed: {err}");
+                }
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/", get(handle_root))
@@ -356,7 +2144,5 @@ async fn main() {
         .await
         .expect("failed to bind TCP listener");
 
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
+    axum::serve(listener, app).await.expect("server error");
 }

@@ -22,6 +22,7 @@ mkdir -p \
   "$OUTPUT_DIR/src/app/xml" \
   "$OUTPUT_DIR/src/app/text" \
   "$OUTPUT_DIR/src/app/health" \
+  "$OUTPUT_DIR/src/app/lib" \
   "$OUTPUT_DIR/public"
 
 # Top-level files
@@ -34,6 +35,9 @@ template_copy "$TMPL/Dockerfile.template"     "$OUTPUT_DIR"
 template_copy "$TMPL/src/app/page.tsx.template"   "$OUTPUT_DIR/src/app"
 template_copy "$TMPL/src/app/layout.tsx.template" "$OUTPUT_DIR/src/app"
 
+# Shared library
+template_copy "$TMPL/src/app/lib/request-info.ts.template" "$OUTPUT_DIR/src/app/lib"
+
 # API routes
 template_copy "$TMPL/src/app/json/route.ts.template"   "$OUTPUT_DIR/src/app/json"
 template_copy "$TMPL/src/app/xml/route.ts.template"    "$OUTPUT_DIR/src/app/xml"
@@ -44,6 +48,8 @@ template_copy "$TMPL/src/app/health/route.ts.template" "$OUTPUT_DIR/src/app/heal
 shared_gitignore  "node" "$OUTPUT_DIR"
 shared_dockerignore      "$OUTPUT_DIR"
 shared_style_css         "$OUTPUT_DIR/public/style.css"
+shared_country_meta      "$OUTPUT_DIR/country-meta.min.json"
+shared_ipdb_assets       "$OUTPUT_DIR"
 shared_app_json          "$OUTPUT_DIR"
 
 # --- Substitute {{VAR}} placeholders in every file ---

@@ -16,11 +16,11 @@
 - Integration: `bats test/integration/`
 - Generators: `bats test/generators/all_generators.bats`
 - Lint: `make lint`
-- Syntax check: `bash -n ferry`
+- Syntax check: `bash -n ferry.sh`
 
 ## Version
 
-- Version lives in `ferry` script line 9: `FERRY_VERSION="x.y.z"`
+- Version lives in `ferry.sh` script line 9: `FERRY_VERSION="x.y.z"`
 - Changelog: `CHANGELOG.md`
 - Always bump version BEFORE doing work if other agents may have made changes
 
@@ -31,9 +31,9 @@
 Invoke with `/ship` when ready to release. Works from main (direct push) or from a feature branch (merge to main). **NEVER creates or switches branches.**
 
 1. **Branch check** — note current branch (do NOT switch)
-2. **Lint** — `make lint` + `bash -n ferry`
+2. **Lint** — `make lint` + `bash -n ferry.sh`
 3. **Tests** — all unit, integration, and generator tests (including Docker runtime HTTP 200)
-4. **Docs check** — version in ferry matches changelog, no stale refs
+4. **Docs check** — version in ferry.sh matches changelog, no stale refs
 5. **Personal data audit** — scan for real domains, tunnel IDs, credentials in staged files
 6. **Version bump** — if not already done, bump FERRY_VERSION (patch/minor/major)
 7. **Changelog** — add entry to CHANGELOG.md with date from `date -Iseconds`
@@ -50,5 +50,5 @@ Full skill spec: `.claude/skills/ship/SKILL.md`
 - Personal data in staged files
 - Any test failing
 - Lint errors
-- Version mismatch between ferry and changelog
+- Version mismatch between ferry.sh and changelog
 - Merge conflicts

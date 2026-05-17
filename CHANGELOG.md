@@ -2,6 +2,70 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.11.0] - 2026-05-17
+
+### Fixed
+- **Privacy detection no longer treats every tunneled request as WARP/proxy:** The previous code interpreted Cloudflare's `cf-warp-tag-id` header as evidence the client was on WARP and therefore proxied. That header is actually a Cloudflare-Tunnel correlation ID injected by `cloudflared` on **every** request reaching the origin (verified with two real-world samples sharing the same UUID), so the check fired 100% of the time and `cloudflare.warp` was always `true`. The misinterpretation also drove `client.privacy.proxy` to `true` for residential and mobile users, since the fallback hop-count check (`x-forwarded-for > 1`) never fires through a Tunnel either.
+- **Country detection now prefers `cf-ipcountry` over the local CSV:** Some mobile carriers operate the same ASN across multiple neighboring countries; `sapics/ip-location-db` inherits the ASN's PeeringDB "home" country, which over-flags a sizeable slice of the carrier's subscribers as being in the wrong country. Cloudflare's `cf-ipcountry` is realtime and authoritative at the routing layer, so it now wins over the snapshot CSV. The CSV remains as a fallback for requests without a Cloudflare hop.
+
+### Changed (breaking — schema)
+- **`client.privacy` is now a structured classification, not three booleans:** New shape:
+  ```json
+  {
+    "tor": false, "vpn": false, "hosting": false,
+    "mobile": false, "residential": false, "forwarded": false,
+    "confidence": "low | medium | high",
+    "sources": ["x4bnet-datacenter", "peeringdb:NSP", "rdns:carrier", "..."]
+  }
+  ```
+  Each boolean is derived from a named, auditable signal source. `confidence` is `high` when a hard list lookup hits (Tor / X4BNet CIDR), `medium` when only ASN-level (PeeringDB) or rDNS heuristics fire, `low` when nothing matched.
+- **`cloudflare.warp` removed from response:** It was never a real WARP signal. Apps that need WARP detection should look at `request.cf.asOrganization === 'Cloudflare'` from a Worker context — not available to Tunnel origins.
+- **`generators/_shared/schema/response-schema.json`** updated to the new privacy shape. Only the Next.js generator emits the new schema in v0.11.0; the other 10 generators continue to emit the legacy `{proxy, hosting, mobile}` shape and will be brought to parity in subsequent releases.
+
+### Added
+- **Four new vendored data sources** under `generators/_shared/assets/ipdb/`:
+  - `x4bnet-vpn-ipv4.txt` — 10,734 commercial-VPN CIDRs from [X4BNet/lists_vpn](https://github.com/X4BNet/lists_vpn) (CC0, daily-updated)
+  - `x4bnet-datacenter-ipv4.txt` — 41,981 datacenter/hosting CIDRs from the same project
+  - `tor-exits.txt` — 1,270 active Tor exit IPs from [`check.torproject.org/torbulkexitlist`](https://check.torproject.org/torbulkexitlist) (official)
+  - `peeringdb-asn-types.json` — 24,601 ASN→`info_type` mappings from [PeeringDB](https://www.peeringdb.com/api/net) (`Cable/DSL/ISP`, `NSP`, `Content`, `Enterprise`, etc.)
+- `scripts/update-ipdb-assets.sh` refreshes all four sources atomically, tracks per-source SHAs and `fetchedAt` timestamps in `ipdb-source.json`, and short-circuits when both upstream commit SHAs match the vendored copy.
+- **rDNS pattern matching** as a medium-confidence signal: strict mobile indicators (`.mobile.`, `-lte-`, `.5g.`), generic telco hostname patterns, and residential broadband markers (`.dyn.`, `.cable.`, `.fios.`). Mobile carriers that also serve fixed-line require a mobile UA to flip the `mobile` bit.
+- **Runtime auto-refresh** in the Next.js template fetches updated datasets independently per source (sapics: daily, X4BNet: daily, Tor: hourly, PeeringDB: weekly) with atomic file replacement and in-memory cache invalidation.
+
+### Honest limits (documented in the rendered UI)
+- Residential proxies (Bright Data, Oxylabs, IPRoyal) cannot be detected from HTTP signals alone — they egress from real consumer ISPs and need active TCP/TLS fingerprinting that Cloudflare strips at the edge. The Privacy section in the rendered HTML calls this out so users aren't misled by a green `residential: true` badge on a residential-proxy connection.
+
+### Verified across the four classification paths
+- **Commercial VPN exit on a hosting ASN** → `hosting: true, confidence: high, sources: [x4bnet-datacenter, peeringdb:NSP]` ✓
+- **Mobile carrier on a Cable/DSL/ISP ASN with carrier rDNS + mobile UA** → `mobile: true, sources: [peeringdb:Cable/DSL/ISP, rdns:carrier]` ✓ (country now derived from `cf-ipcountry` rather than the ASN's CSV home country)
+- **Tor exit node** → `tor: true, vpn: true, confidence: high, sources: [tor-exits, peeringdb:Educational/Research]` ✓
+- **Residential broadband ISP** → `residential: true, confidence: medium, sources: [peeringdb:Cable/DSL/ISP]` ✓
+
+## [0.10.0] - 2026-05-17
+
+### Changed
+- **DNS is now inherited from the host instead of hardcoded.** Removed `dns: [172.17.0.1]` from both `cloudflared` and `dokku` services in `docker-compose.yml`. Containers now inherit `/etc/resolv.conf` via Docker's embedded resolver (`127.0.0.11`), so Ferry works with any host DNS setup — router DHCP, systemd-resolved, NextDNS, Pi-hole, corporate — without any compose tweak. The `172.17.0.1` value pinned to a NextDNS listener that, once removed from the host, caused cloudflared to crash-loop (`lookup ... on 127.0.0.11:53: server misbehaving`) and take all tunneled apps offline.
+- **`ferry status` DNS section is adaptive, not hardcoded.** Replaced the `NextDNS` row that probed `127.0.0.1` and `172.17.0.1` with two new rows:
+  - `Host DNS` — discovers active nameservers via systemd-resolved's authoritative surface (`resolvectl dns`) and probes each with `dig +short`. Avoids parsing `/etc/resolv.conf`, which on many distros is only a compatibility stub written by NetworkManager (the `resolv.conf mode: foreign` case). Falls back to `/run/systemd/resolve/resolv.conf` and then `/etc/resolv.conf` only on hosts without systemd-resolved.
+  - `Container DNS` — spins up an ephemeral `busybox` container on the `webserver` network and resolves `argotunnel.com` (the exact name cloudflared depends on). Catches the precise failure mode that takes the tunnel offline, regardless of which resolver is in use.
+
+### Added
+- `_detect_host_resolvers`, `_probe_resolver`, `_probe_container_dns` helpers in `ferry.sh`.
+- Docs: `docs/troubleshooting.md → Custom DNS upstream (optional)` documents the per-service `dns:` override for the rare case where the host resolver lives on `127.0.0.1` and can't be moved.
+
+### Removed
+- All hardcoded `172.17.0.1` and NextDNS-specific instructions from `docs/troubleshooting.md`, `docs/initial-setup.md`, `docs/architecture.md`, and `docs/deploy-guide-github-to-live.md`. The NextDNS-on-Docker-bridge setup is no longer the canonical path; it's mentioned only as one possible cause when the host resolver is unreachable from containers.
+
+## [0.9.1] - 2026-04-21
+
+### Fixed
+- **`ferry new <name>` → deploy on a fresh Dokku no longer aborts with `Failed to verify existing ingress before deploy`.** When Dokku had zero apps, `dokku apps:list` emitted a warning line (` !     You haven't deployed any applications yet`) that `dokku_list_apps` returned verbatim as a fake app name. Downstream, `sync_missing_ingress_from_dokku` then called `dokku domains:report` against that non-existent app and failed the deploy preflight. The same bug also caused `ferry status` and `ferry list` to render a phantom row containing the warning text.
+- `dokku_list_apps` now filters Dokku's banner prefixes (`=====>`, `----->`, ` !`). Dokku app names can never start with these characters, so the filter is safe for populated installs.
+
+### Added
+- Regression tests in `test/unit/dokku_recovery.bats` covering both the empty-Dokku path and the populated-list path for `dokku_list_apps`.
+- Troubleshooting entry in `docs/troubleshooting.md` for the `Failed to verify existing ingress before deploy` symptom.
+
 ## [0.9.0] - 2026-04-17
 
 ### Added

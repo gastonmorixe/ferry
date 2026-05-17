@@ -23,8 +23,14 @@ todos/
 # App clones (each has its own repo)
 apps/*/
 
+# Private workspace — anything personal/local-only lives here
+private/
+
 # Build artifacts & temp files
+tmp/
 node_modules/
+__pycache__/
+*.pyc
 *.bak
 *.log
 *.tmp

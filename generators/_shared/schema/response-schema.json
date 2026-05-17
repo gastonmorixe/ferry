@@ -1,16 +1,80 @@
 {
   "app": "{{APP_NAME}}",
-  "ferry": true,
+  "ferry": "⛵ Ferry v{{FERRY_VERSION}}",
   "timestamp": "",
-  "server": {
-    "hostname": "",
-    "port": 0
+  "client": {
+    "ip": "",
+    "ipVersion": "IPv4",
+    "hostname": null,
+    "geo": {
+      "continent": "",
+      "continentCode": "",
+      "country": "",
+      "countryCode": "",
+      "flag": "",
+      "region": "",
+      "regionName": "",
+      "city": "",
+      "district": "",
+      "zip": "",
+      "lat": 0,
+      "lon": 0,
+      "timezone": "",
+      "utcOffset": 0,
+      "currency": ""
+    },
+    "network": {
+      "isp": "",
+      "org": "",
+      "asn": "",
+      "asName": ""
+    },
+    "privacy": {
+      "tor": false,
+      "vpn": false,
+      "hosting": false,
+      "mobile": false,
+      "residential": false,
+      "forwarded": false,
+      "confidence": "low",
+      "sources": []
+    },
+    "userAgent": {
+      "raw": "",
+      "browser": "",
+      "browserVersion": "",
+      "os": "",
+      "osVersion": "",
+      "device": "",
+      "engine": ""
+    },
+    "languages": [],
+    "encoding": [],
+    "dnt": false,
+    "gpc": false
+  },
+  "cloudflare": {
+    "detected": false,
+    "ray": null,
+    "datacenter": null,
+    "datacenterCity": null,
+    "country": null,
+    "scheme": null
   },
   "request": {
     "method": "",
     "url": "",
     "protocol": "",
-    "ip": "",
-    "headers": {}
-  }
+    "host": ""
+  },
+  "server": {
+    "hostname": "",
+    "port": 0,
+    "uptime": 0,
+    "uptimeHuman": "",
+    "runtime": "",
+    "platform": "",
+    "arch": ""
+  },
+  "headers": {}
 }

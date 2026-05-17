@@ -25,4 +25,4 @@ export GENERATORS_DIR="$FERRY_ROOT/generators"
 mkdir -p "$CERT_DIR"
 
 # Source ferry (safe — source guard prevents main() from running)
-source "$FERRY_ROOT/ferry"
+source "$FERRY_ROOT/ferry.sh"

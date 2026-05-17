@@ -1,0 +1,30 @@
+{
+  "peeringdb": {
+    "fetchedAt": "2026-05-17T20:25:36Z",
+    "file": "peeringdb-asn-types.json",
+    "url": "https://www.peeringdb.com/api/net"
+  },
+  "sapics": {
+    "commit": "60de40d62c6e1fbaa05a40cee16951712f79b21f",
+    "fetchedAt": "2026-05-17T20:25:36Z",
+    "files": {
+      "asn": "iptoasn-asn-ipv4-num.csv",
+      "country": "geo-whois-asn-country-ipv4-num.csv"
+    },
+    "repo": "https://github.com/sapics/ip-location-db"
+  },
+  "tor": {
+    "fetchedAt": "2026-05-17T20:25:36Z",
+    "file": "tor-exits.txt",
+    "url": "https://check.torproject.org/torbulkexitlist"
+  },
+  "x4bnet": {
+    "commit": "95b275436ceaef494d0daa6b7576fcefd56e94bf",
+    "fetchedAt": "2026-05-17T20:25:36Z",
+    "files": {
+      "datacenter": "x4bnet-datacenter-ipv4.txt",
+      "vpn": "x4bnet-vpn-ipv4.txt"
+    },
+    "repo": "https://github.com/X4BNet/lists_vpn"
+  }
+}

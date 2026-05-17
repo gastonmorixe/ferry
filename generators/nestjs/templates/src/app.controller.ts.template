@@ -7,29 +7,30 @@ export class AppController {
   constructor(private readonly appService: AppService) {}
 
   @Get('/')
-  getHtml(@Req() req: Request, @Res() res: Response): void {
-    const info = this.appService.getRequestInfo(req)
+  async getHtml(@Req() req: Request, @Res() res: Response): Promise<void> {
+    const data = await this.appService.buildPayload(req)
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
-    res.send(this.appService.renderHtml(info))
+    res.setHeader('Accept-CH', 'Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Platform, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Full-Version, Sec-CH-UA-Platform-Version')
+    res.send(this.appService.renderHtml(data))
   }
 
   @Get('/json')
-  getJson(@Req() req: Request) {
-    return this.appService.getRequestInfo(req)
+  async getJson(@Req() req: Request) {
+    return this.appService.buildPayload(req)
   }
 
   @Get('/xml')
-  getXml(@Req() req: Request, @Res() res: Response): void {
-    const info = this.appService.getRequestInfo(req)
+  async getXml(@Req() req: Request, @Res() res: Response): Promise<void> {
+    const data = await this.appService.buildPayload(req)
     res.setHeader('Content-Type', 'application/xml; charset=utf-8')
-    res.send(this.appService.renderXml(info))
+    res.send(this.appService.renderXml(data))
   }
 
   @Get('/text')
-  getText(@Req() req: Request, @Res() res: Response): void {
-    const info = this.appService.getRequestInfo(req)
+  async getText(@Req() req: Request, @Res() res: Response): Promise<void> {
+    const data = await this.appService.buildPayload(req)
     res.setHeader('Content-Type', 'text/plain; charset=utf-8')
-    res.send(this.appService.renderText(info))
+    res.send(this.appService.renderText(data))
   }
 
   @Get('/health')
