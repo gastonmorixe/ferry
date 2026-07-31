@@ -2,6 +2,13 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.12.1] - 2026-07-31
+
+### Changed
+- **Dokku now tracks current stable by Ferry policy.** The compose default is `dokku/dokku:latest`, replacing the stale `0.37.7` image reference. This is a maintenance-selection policy, not a reproducible target-VM apply pin.
+- **Target apply remains digest-gated.** Before any target VM `docker compose up`, resolve and record `dokku/dokku:latest@sha256:…` in the approved BOM/rehearsal evidence and review that immutable result. This release does not perform a VM apply or claim the BOM/version-freeze gate is closed.
+- **Cloudflared remains separately deferred.** `cloudflare/cloudflared:latest` is unchanged; its immutable digest must be resolved and recorded at the same target BOM/apply gate. No Cloudflare API, DNS, Tunnel, login, deployment, VM, or R2 action is part of this release.
+
 ## [0.12.0] - 2026-07-31
 
 ### Added

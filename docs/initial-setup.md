@@ -138,7 +138,7 @@ cd ~/ferry
 docker compose up -d
 ```
 
-First run pulls `cloudflare/cloudflared:latest` (~55 MB) and `dokku/dokku:0.37.7` (~357 MB). Dokku takes ~15 seconds to initialize on first boot (generates SSH keys, DH parameters, sets hostname).
+First run pulls `cloudflare/cloudflared:latest` and `dokku/dokku:latest`. Ferry follows current Dokku by maintenance policy; `latest` is intentionally **not** a reproducible apply pin. Immediately before any target VM `docker compose up`, resolve and record the selected Dokku image as `dokku/dokku:latest@sha256:…` in the approved BOM/rehearsal evidence, then review that resolved digest before applying. `cloudflare/cloudflared:latest` remains separately deferred: resolve and record its digest at the same BOM/apply gate. Dokku takes about 15 seconds to initialize on first boot (generates SSH keys, DH parameters, sets hostname).
 
 You can run `ferry login` before or after `compose up`. If cloudflared is already running when login writes a new token, Ferry restarts it. If not, the token applies on the next `docker compose up -d`.
 

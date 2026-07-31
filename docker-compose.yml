@@ -14,7 +14,9 @@ services:
         condition: service_started
 
   dokku:
-    image: dokku/dokku:0.37.7
+    # Ferry tracks the current Dokku image by policy. Resolve and record its
+    # immutable digest in the target BOM immediately before any VM compose apply.
+    image: dokku/dokku:latest
     container_name: dokku
     hostname: ${DOKKU_HOSTNAME:-apps.local}
     environment:

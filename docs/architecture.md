@@ -27,8 +27,8 @@ Deep dive into how all the pieces fit together: containers, networks, DNS, and t
 
 | Container | Image | Network(s) | Purpose |
 |---|---|---|---|
-| `cloudflared` | `cloudflare/cloudflared:latest` | webserver | Runs the Cloudflare Tunnel, receives traffic from the internet |
-| `dokku` | `dokku/dokku:0.37.7` | webserver, bridge | Runs nginx (port 80) + SSH (port 22), manages app lifecycle |
+| `cloudflared` | `cloudflare/cloudflared:latest` | webserver | Runs the Cloudflare Tunnel, receives traffic from the internet; its immutable digest is deferred to the target BOM/apply gate. |
+| `dokku` | `dokku/dokku:latest` | webserver, bridge | Runs nginx (port 80) + SSH (port 22), manages app lifecycle. Ferry follows current Dokku; resolve and record the immutable digest before each target apply. |
 | `test-app.web.1` | `dokku/test-app:latest` | bridge, webserver | The actual app container, managed by Dokku |
 
 ### Why Dokku is on Both Networks
