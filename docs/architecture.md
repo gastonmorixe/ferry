@@ -148,26 +148,20 @@ No ports 80 or 443 are exposed on the host. All HTTP traffic goes through the Cl
 
 ## Cloudflare Tunnel
 
-- **Tunnel name:** `<tunnel-name>`
-- **Tunnel ID:** `<tunnel-id>`
+Ferry uses **one shared host tunnel** for every app hostname. See [TUNNEL_ID and the Shared Cloudflare Tunnel](tunnel-id.md) for why `TUNNEL_ID` is host bootstrap (not per-deploy) and how deploy attaches DNS + ingress on top of it.
+
+- **Tunnel name:** set via `ferry login --tunnel-name` (default `ferry`)
+- **Tunnel ID:** `TUNNEL_ID` in `.env` (written by `ferry login`)
 - **Protocol:** QUIC
 - **Connections:** 4 concurrent (to different Cloudflare edge locations)
 
-The tunnel is authenticated via a credentials file mounted from `~/.cloudflared/<tunnel-id>.json` into the container. This file is never copied into the project directory.
+The connector is remotely managed: compose runs `cloudflared tunnel run` with `TUNNEL_TOKEN` from `.env` (no `~/.cloudflared/<id>.json` mount). `ferry login` creates/selects the tunnel and writes both `TUNNEL_ID` and `TUNNEL_TOKEN`.
 
 ### Ingress Rules
 
-Defined in `tunnels/providers/cloudflare/config.yml`. Rules are evaluated top-to-bottom; first match wins. The last rule must always be a catch-all:
+Ingress is managed through the Cloudflare Tunnel config API (`/accounts/.../cfd_tunnel/${TUNNEL_ID}/configurations`), not a local credentials-driven config file on the host. Rules are evaluated top-to-bottom; first match wins. The last rule must always be a catch-all (`http_status:404`).
 
-```yaml
-ingress:
-  - hostname: app.example.com
-    service: http://dokku:80
-  # Add new hostnames here, above the catch-all
-  - service: http_status:404
-```
-
-All rules point to `http://dokku:80` because Dokku's nginx handles per-app routing based on the `Host` header.
+All app rules point to `http://dokku:80` because Dokku's nginx handles per-app routing based on the `Host` header. `ferry deploy` / `yaml_add_ingress` add hostname rules; `ferry remove` / prune remove them.
 
 ## Cloudflare API Layer (ferry)
 
@@ -176,11 +170,12 @@ The `ferry` script includes a full Cloudflare API integration layer:
 - **Helpers:** `cf_api` (raw HTTP), `cf_api_ok` (success check), `cf_api_error` (error extraction)
 - **Token verification:** `cf_token_verify` tries `/user/tokens/verify` first, then `/accounts/{id}/tokens/verify`, with fallback to zone listing
 - **Account discovery:** Auto-discovers `CF_ACCOUNT_ID` from `/accounts` or from zone response, caches in `.env`
+- **Tunnel bootstrap:** `cf_ensure_tunnel` (via `ferry login`) lists/creates a remotely-managed tunnel and fetches the connector token
 - **Zone resolution:** `cf_resolve_zone_id` walks up domain labels (e.g., `app.example.com` -> `example.com`) to find the matching zone, with per-session caching
 - **DNS operations:** `cf_dns_create_cname` (proxied CNAME to tunnel), `cf_dns_delete_record`, `cf_dns_list_records`
 - **Auth gating:** `cf_auth_check` runs on startup (red banner if not authed), `cf_require_auth` hard-gates with inline login offer
 
-The API token (`CF_API_TOKEN`) replaces zone-scoped certs for DNS operations and works across all accessible zones. Zone certs are retained as a DNS creation fallback for domains with a matching cert file.
+The API token (`CF_API_TOKEN`) needs Zone DNS Edit, Zone Read, and Account → Cloudflare Tunnel → Edit. Zone certs are retained as a DNS creation fallback for domains with a matching cert file.
 
 ## Host Wrapper: `/usr/local/bin/dokku`
 

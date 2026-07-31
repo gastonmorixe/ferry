@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.11.0"
+FERRY_VERSION="0.12.0"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -424,9 +424,10 @@ cf_check_permissions() {
         fi
     fi
     if $tunnel_ok; then
-        echo -e "    ${C_SUCCESS}✓${C_RESET} Tunnel:Read        — can list tunnels"
+        echo -e "    ${C_SUCCESS}✓${C_RESET} Tunnel:Read/Edit   — can list tunnels"
     else
-        echo -e "    ${C_WARN}~${C_RESET} Tunnel:Read        — not available (optional)"
+        echo -e "    ${C_ERROR}✗${C_RESET} Tunnel:Read/Edit   — cannot list tunnels (required for login tunnel bootstrap)"
+        all_ok=false
     fi
 
     # List accessible zones
@@ -437,6 +438,252 @@ cf_check_permissions() {
     fi
 
     $all_ok
+}
+
+cf_tunnel_get_token() {
+    # Fetch connector token for a remotely-managed tunnel. Prints token to stdout.
+    local tunnel_id="$1"
+    local resp token
+    resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${tunnel_id}/token" 2>/dev/null) || true
+    if ! cf_api_ok "$resp" 2>/dev/null; then
+        return 1
+    fi
+    # API may return result as a bare string or as {token: "..."}
+    token=$(echo "$resp" | jq -r 'if (.result|type)=="string" then .result else (.result.token // empty) end' 2>/dev/null) || true
+    if [[ -z "$token" || "$token" == "null" ]]; then
+        return 1
+    fi
+    echo "$token"
+}
+
+cf_tunnel_create() {
+    # Create a remotely-managed tunnel (config_src=cloudflare).
+    # Prints "id<TAB>name<TAB>token" on success.
+    local name="$1"
+    local body resp tunnel_id tunnel_name token
+    body=$(jq -n --arg name "$name" '{name:$name, config_src:"cloudflare"}')
+    resp=$(cf_api POST "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel" "$body" 2>/dev/null) || true
+    if ! cf_api_ok "$resp" 2>/dev/null; then
+        error "Failed to create tunnel: $(cf_api_error "$resp")"
+        return 1
+    fi
+    tunnel_id=$(echo "$resp" | jq -r '.result.id // empty')
+    tunnel_name=$(echo "$resp" | jq -r '.result.name // empty')
+    token=$(echo "$resp" | jq -r '.result.token // empty')
+    if [[ -z "$tunnel_id" ]]; then
+        error "Tunnel create response missing id"
+        return 1
+    fi
+    if [[ -z "$token" || "$token" == "null" ]]; then
+        token=$(cf_tunnel_get_token "$tunnel_id") || {
+            error "Tunnel created ($tunnel_id) but connector token could not be fetched"
+            return 1
+        }
+    fi
+    printf '%s\t%s\t%s\n' "$tunnel_id" "$tunnel_name" "$token"
+}
+
+_cf_maybe_restart_cloudflared() {
+    # Recreate cloudflared if the compose service exists / is up so it picks up TUNNEL_TOKEN.
+    if [[ ! -f "$COMPOSE_FILE" ]]; then
+        return 0
+    fi
+    if ! command -v docker &>/dev/null; then
+        return 0
+    fi
+    local state
+    state=$(docker compose -f "$COMPOSE_FILE" ps --format '{{.State}}' cloudflared 2>/dev/null || true)
+    if [[ -z "$state" ]]; then
+        dim "cloudflared not running yet — token will apply on next: docker compose up -d"
+        return 0
+    fi
+    cloudflared_restart || {
+        warn "Tunnel credentials saved, but cloudflared restart failed. Run: ferry reload"
+        return 0
+    }
+}
+
+cf_ensure_tunnel() {
+    # Ensure host TUNNEL_ID + TUNNEL_TOKEN exist in .env (remotely-managed tunnel).
+    # Usage: cf_ensure_tunnel [preferred_name]
+    # Idempotent: keeps a valid existing pair; fills missing token; otherwise list/pick/create.
+    local preferred_name="${1:-ferry}"
+    local list_resp count tunnel_id="" tunnel_name="" tunnel_token=""
+
+    if [[ -z "$CF_ACCOUNT_ID" ]]; then
+        error "CF_ACCOUNT_ID required for tunnel setup. Re-run ferry login after account discovery succeeds."
+        return 1
+    fi
+
+    # Path A: both already set — verify the tunnel still exists
+    if [[ -n "$TUNNEL_ID" && -n "${TUNNEL_TOKEN:-}" ]]; then
+        local verify_resp
+        verify_resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}" 2>/dev/null) || true
+        if cf_api_ok "$verify_resp" 2>/dev/null; then
+            local deleted
+            deleted=$(echo "$verify_resp" | jq -r '.result.deleted_at // empty')
+            if [[ -z "$deleted" ]]; then
+                tunnel_name=$(echo "$verify_resp" | jq -r '.result.name // empty')
+                success "Host tunnel ready: ${tunnel_name:-tunnel} ($TUNNEL_ID)"
+                _cf_maybe_restart_cloudflared
+                return 0
+            fi
+        fi
+        warn "Configured TUNNEL_ID is missing or deleted in Cloudflare. Reconfiguring..."
+    fi
+
+    # Path B: ID set, token missing — fetch connector token
+    if [[ -n "$TUNNEL_ID" && -z "${TUNNEL_TOKEN:-}" ]]; then
+        info "Fetching connector token for TUNNEL_ID=$TUNNEL_ID..."
+        tunnel_token=$(cf_tunnel_get_token "$TUNNEL_ID") || {
+            error "Could not fetch TUNNEL_TOKEN for $TUNNEL_ID."
+            error "Token needs Account → Cloudflare Tunnel → Edit, and the tunnel must be remotely managed (config_src=cloudflare)."
+            return 1
+        }
+        env_set "TUNNEL_TOKEN" "$tunnel_token"
+        success "TUNNEL_TOKEN saved to $ENV_FILE"
+        _cf_maybe_restart_cloudflared
+        return 0
+    fi
+
+    # Path C: list existing tunnels and pick / create
+    info "Looking up Cloudflare tunnels..."
+    list_resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?is_deleted=false&per_page=50" 2>/dev/null) || true
+    if ! cf_api_ok "$list_resp" 2>/dev/null; then
+        error "Cannot list tunnels: $(cf_api_error "$list_resp")"
+        error "API token needs Account → Cloudflare Tunnel → Edit"
+        return 1
+    fi
+
+    count=$(echo "$list_resp" | jq '[.result[] | select((.deleted_at // null) == null)] | length')
+
+    if ((count == 0)); then
+        info "No tunnels found. Creating remotely-managed tunnel '${preferred_name}'..."
+        if ! $YES && [[ -t 0 ]]; then
+            local create_choice=0
+            if confirm "Create tunnel '${preferred_name}'?"; then
+                create_choice=0
+            else
+                create_choice=$?
+            fi
+            case "$create_choice" in
+                0) ;;
+                2) error "Tunnel setup cancelled."; return 1 ;;
+                3) return 3 ;;
+                *) error "Tunnel setup cancelled."; return 1 ;;
+            esac
+        fi
+        local created
+        created=$(cf_tunnel_create "$preferred_name") || return 1
+        tunnel_id=$(echo "$created" | cut -f1)
+        tunnel_name=$(echo "$created" | cut -f2)
+        tunnel_token=$(echo "$created" | cut -f3)
+        success "Created tunnel: $tunnel_name ($tunnel_id)"
+    elif ((count == 1)); then
+        tunnel_id=$(echo "$list_resp" | jq -r '[.result[] | select((.deleted_at // null) == null)][0].id')
+        tunnel_name=$(echo "$list_resp" | jq -r '[.result[] | select((.deleted_at // null) == null)][0].name')
+        info "Found existing tunnel: $tunnel_name ($tunnel_id)"
+        if ! $YES && [[ -t 0 ]]; then
+            local use_choice=0
+            if confirm "Use this tunnel for Ferry?"; then
+                use_choice=0
+            else
+                use_choice=$?
+            fi
+            case "$use_choice" in
+                0) ;;
+                2)
+                    info "Creating new tunnel '${preferred_name}' instead..."
+                    local created
+                    created=$(cf_tunnel_create "$preferred_name") || return 1
+                    tunnel_id=$(echo "$created" | cut -f1)
+                    tunnel_name=$(echo "$created" | cut -f2)
+                    tunnel_token=$(echo "$created" | cut -f3)
+                    ;;
+                3) return 3 ;;
+                *) error "Tunnel setup cancelled."; return 1 ;;
+            esac
+        fi
+        if [[ -z "$tunnel_token" ]]; then
+            tunnel_token=$(cf_tunnel_get_token "$tunnel_id") || {
+                error "Could not fetch connector token for tunnel $tunnel_id (is it remotely managed?)."
+                return 1
+            }
+        fi
+    else
+        # Multiple tunnels: prefer name match, else interactive pick / -y heuristics
+        local match_id match_name
+        match_id=$(echo "$list_resp" | jq -r --arg n "$preferred_name" \
+            '[.result[] | select((.deleted_at // null) == null and .name == $n)][0].id // empty')
+        match_name=$(echo "$list_resp" | jq -r --arg n "$preferred_name" \
+            '[.result[] | select((.deleted_at // null) == null and .name == $n)][0].name // empty')
+
+        if [[ -n "$match_id" ]] && $YES; then
+            tunnel_id="$match_id"
+            tunnel_name="$match_name"
+            info "Using tunnel matching --tunnel-name: $tunnel_name ($tunnel_id)"
+        elif $YES; then
+            # Prefer remotely-managed, else first active
+            tunnel_id=$(echo "$list_resp" | jq -r '
+                (
+                  [.result[] | select((.deleted_at // null) == null and (.config_src // "") == "cloudflare")][0].id
+                ) // (
+                  [.result[] | select((.deleted_at // null) == null)][0].id
+                ) // empty
+            ')
+            tunnel_name=$(echo "$list_resp" | jq -r --arg id "$tunnel_id" \
+                '.result[] | select(.id == $id) | .name' | head -1)
+            info "Non-interactive: selected tunnel $tunnel_name ($tunnel_id)"
+        else
+            # Build selector options: existing tunnels + create-new
+            local opts=()
+            local ids=() names=()
+            while IFS=$'\t' read -r tid tname tsrc; do
+                [[ -z "$tid" ]] && continue
+                ids+=("$tid")
+                names+=("$tname")
+                opts+=("${tname}|${tid} (${tsrc:-local})")
+            done < <(echo "$list_resp" | jq -r \
+                '.result[] | select((.deleted_at // null) == null) | [.id, .name, (.config_src // "local")] | @tsv')
+            opts+=("Create new tunnel '${preferred_name}'|remotely managed (config_src=cloudflare)")
+
+            tui_select --no-back "Select host tunnel for Ferry" "${opts[@]}" || {
+                case $? in
+                    2) error "Tunnel setup cancelled."; return 1 ;;
+                    3) return 3 ;;
+                    *) return 1 ;;
+                esac
+            }
+
+            if ((_TUI_SELECTED >= ${#ids[@]})); then
+                local created
+                created=$(cf_tunnel_create "$preferred_name") || return 1
+                tunnel_id=$(echo "$created" | cut -f1)
+                tunnel_name=$(echo "$created" | cut -f2)
+                tunnel_token=$(echo "$created" | cut -f3)
+                success "Created tunnel: $tunnel_name ($tunnel_id)"
+            else
+                tunnel_id="${ids[$_TUI_SELECTED]}"
+                tunnel_name="${names[$_TUI_SELECTED]}"
+                info "Selected tunnel: $tunnel_name ($tunnel_id)"
+            fi
+        fi
+
+        if [[ -z "$tunnel_token" ]]; then
+            tunnel_token=$(cf_tunnel_get_token "$tunnel_id") || {
+                error "Could not fetch connector token for tunnel $tunnel_id (is it remotely managed?)."
+                dim "Create a new remotely-managed tunnel, or re-run: ferry login --tunnel-name ${preferred_name}"
+                return 1
+            }
+        fi
+    fi
+
+    env_set "TUNNEL_ID" "$tunnel_id"
+    env_set "TUNNEL_TOKEN" "$tunnel_token"
+    success "TUNNEL_ID saved: $tunnel_id"
+    success "TUNNEL_TOKEN saved to $ENV_FILE"
+    _cf_maybe_restart_cloudflared
+    return 0
 }
 
 cert_find_for_hostname() {
@@ -3386,7 +3633,7 @@ cmd_help() {
     echo ""
     echo -e "    ${C_WHITE}ferry${C_RESET}                                  ${C_DIM}Interactive menu${C_RESET}"
     echo -e "    ${C_WHITE}ferry new${C_RESET} <name> [-t <tmpl>] [-y]      ${C_DIM}Create app from template${C_RESET}"
-    echo -e "    ${C_WHITE}ferry login${C_RESET} [-t <token>]               ${C_DIM}Set up Cloudflare API${C_RESET}"
+    echo -e "    ${C_WHITE}ferry login${C_RESET} [opts]                       ${C_DIM}API token + host tunnel setup${C_RESET}"
     echo -e "    ${C_WHITE}ferry deploy${C_RESET} <name> [opts] [-y]        ${C_DIM}Deploy a new app${C_RESET}"
     echo -e "    ${C_WHITE}ferry remove${C_RESET} <name> [-y]               ${C_DIM}Remove an app${C_RESET}"
     echo -e "    ${C_WHITE}ferry prune reconcile${C_RESET}                  ${C_DIM}Reconcile orphan ingress rules${C_RESET}"
@@ -3418,6 +3665,7 @@ cmd_help() {
     kv "--no-push" "Infrastructure only, skip git push"
     kv "-y, --yes" "Skip all confirmations"
     kv "-t, --token" "API token for login (skip prompt)"
+    kv "--tunnel-name" "Preferred host tunnel name for login create/select (default: ferry)"
 
     section_header "Tune Flags"
     echo ""
@@ -3440,7 +3688,8 @@ cmd_help() {
 
     section_header "Environment"
     echo ""
-    kv "TUNNEL_ID" "(required) Cloudflare tunnel ID"
+    kv "TUNNEL_ID" "(auto) Host tunnel UUID — set via ferry login"
+    kv "TUNNEL_TOKEN" "(auto) Connector token for cloudflared — set via ferry login"
     kv "DOKKU_HOSTNAME" "(required) Default domain for app hostnames"
     kv "CF_API_TOKEN" "(auto) Set via ferry login"
     kv "CF_ACCOUNT_ID" "(auto) Auto-discovered"
@@ -3453,16 +3702,24 @@ cmd_help() {
 
 cmd_login() {
     local provided_token=""
+    local tunnel_name="ferry"
+    local keep_existing_token=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -t|--token) provided_token="$2"; shift 2 ;;
+            --tunnel-name) tunnel_name="$2"; shift 2 ;;
             -y|--yes)   YES=true; shift ;;
             -*)         error "Unknown flag: $1"; return 1 ;;
             *)          shift ;;
         esac
     done
+
+    if [[ -z "$tunnel_name" ]]; then
+        error "--tunnel-name cannot be empty"
+        return 1
+    fi
 
     section_header "Cloudflare API Setup"
     echo ""
@@ -3472,19 +3729,13 @@ cmd_login() {
         info "Existing token found. Checking..."
         if cf_token_verify; then
             success "Current token is valid."
-            echo ""
-            section_header "Permissions"
-            cf_check_permissions
-            echo ""
-            cert_check_all
-            echo ""
 
             if [[ -n "$provided_token" ]]; then
                 info "Replacing with provided token..."
             elif [[ -z "$provided_token" ]] && $YES; then
-                # -y without -t: keep existing valid token
+                # -y without -t: keep existing valid token, continue to tunnel bootstrap
                 info "Keeping current valid token."
-                return 0
+                keep_existing_token=true
             else
                 local replace_choice=0
                 if confirm "Replace existing token?"; then
@@ -3494,9 +3745,9 @@ cmd_login() {
                 fi
                 case "$replace_choice" in
                     0) ;;
-                    2) info "Keeping current token."; return 0 ;;
+                    2) info "Keeping current token."; keep_existing_token=true ;;
                     3) return 3 ;;
-                    *) info "Keeping current token."; return 0 ;;
+                    *) info "Keeping current token."; keep_existing_token=true ;;
                 esac
             fi
         else
@@ -3514,95 +3765,93 @@ cmd_login() {
         fi
     fi
 
-    # Step 2: Get the new token
-    local new_token=""
-    if [[ -n "$provided_token" ]]; then
-        new_token="$provided_token"
-    else
-        # Show instructions only when user needs to create a token manually
-        echo ""
-        section_header "Create API Token"
-        echo ""
-        echo "  You need a Cloudflare API token with these permissions:"
-        echo ""
-        kv_color "Zone : DNS : Edit" "create/delete DNS records" "$C_SUCCESS"
-        kv_color "Zone : Zone : Read" "look up zone IDs" "$C_SUCCESS"
-        kv_color "Account : Tunnel : Read" "check tunnel status (optional)" "$C_DIM"
-        echo ""
-        echo "  Steps:"
-        echo "    1. Open the URL below in your browser"
-        echo "    2. Review the pre-filled permissions"
-        echo "    3. Under 'Zone Resources', select 'All zones'"
-        echo "    4. Click 'Continue to summary' → 'Create Token'"
-        echo "    5. Copy the token and paste it here"
-        echo ""
-        echo -e "  ${C_ACCENT}${CF_TOKEN_URL}${C_RESET}"
-        echo ""
+    # Step 2: Get / save API token (unless keeping a valid existing one)
+    if ! $keep_existing_token; then
+        local new_token=""
+        if [[ -n "$provided_token" ]]; then
+            new_token="$provided_token"
+        else
+            echo ""
+            section_header "Create API Token"
+            echo ""
+            echo "  You need a Cloudflare API token with these permissions:"
+            echo ""
+            kv_color "Zone : DNS : Edit" "create/delete DNS records" "$C_SUCCESS"
+            kv_color "Zone : Zone : Read" "look up zone IDs" "$C_SUCCESS"
+            kv_color "Account : Cloudflare Tunnel : Edit" "create/list tunnels + connector token" "$C_SUCCESS"
+            echo ""
+            echo "  Steps:"
+            echo "    1. Open the URL below in your browser"
+            echo "    2. Create a custom token with the permissions above"
+            echo "    3. Under 'Zone Resources', select 'All zones'"
+            echo "    4. Under 'Account Resources', select your account"
+            echo "    5. Click 'Continue to summary' → 'Create Token'"
+            echo "    6. Copy the token and paste it here"
+            echo ""
+            echo -e "  ${C_ACCENT}${CF_TOKEN_URL}${C_RESET}"
+            echo ""
 
-        # Try to open browser
-        if [[ -t 0 ]]; then
-            if command -v xdg-open &>/dev/null; then
-                local browser_choice=0
-                if confirm "Open in browser?"; then
-                    browser_choice=0
-                else
-                    browser_choice=$?
+            if [[ -t 0 ]]; then
+                if command -v xdg-open &>/dev/null; then
+                    local browser_choice=0
+                    if confirm "Open in browser?"; then
+                        browser_choice=0
+                    else
+                        browser_choice=$?
+                    fi
+                    case "$browser_choice" in
+                        0) xdg-open "$CF_TOKEN_URL" 2>/dev/null & ;;
+                        2) ;;
+                        3) return 3 ;;
+                    esac
+                elif command -v open &>/dev/null; then
+                    local browser_choice=0
+                    if confirm "Open in browser?"; then
+                        browser_choice=0
+                    else
+                        browser_choice=$?
+                    fi
+                    case "$browser_choice" in
+                        0) open "$CF_TOKEN_URL" 2>/dev/null & ;;
+                        2) ;;
+                        3) return 3 ;;
+                    esac
                 fi
-                case "$browser_choice" in
-                    0) xdg-open "$CF_TOKEN_URL" 2>/dev/null & ;;
-                    2) ;;
-                    3) return 3 ;;
-                esac
-            elif command -v open &>/dev/null; then
-                local browser_choice=0
-                if confirm "Open in browser?"; then
-                    browser_choice=0
-                else
-                    browser_choice=$?
-                fi
-                case "$browser_choice" in
-                    0) open "$CF_TOKEN_URL" 2>/dev/null & ;;
-                    2) ;;
-                    3) return 3 ;;
-                esac
             fi
+
+            echo ""
+            tui_read new_token "API token" "" false || {
+                case $? in
+                    2) return 0 ;;
+                    3) return 3 ;;
+                    *) return 1 ;;
+                esac
+            }
         fi
 
-        echo ""
-        tui_read new_token "API token" "" false || {
-            case $? in
-                2) return 0 ;;
-                3) return 3 ;;
-                *) return 1 ;;
-            esac
-        }
+        if [[ -z "$new_token" ]]; then
+            error "No token provided."
+            return 1
+        fi
+
+        new_token=$(echo "$new_token" | xargs)
+
+        info "Validating token..."
+        CF_API_TOKEN="$new_token"
+        export CF_API_TOKEN
+
+        if ! cf_token_verify; then
+            error "Token validation failed (${_cf_token_status})."
+            error "Make sure you copied the full token."
+            return 1
+        fi
+        success "Token is valid!"
+
+        env_set "CF_API_TOKEN" "$new_token"
+        success "Token saved to $ENV_FILE"
     fi
 
-    if [[ -z "$new_token" ]]; then
-        error "No token provided."
-        return 1
-    fi
-
-    # Trim whitespace
-    new_token=$(echo "$new_token" | xargs)
-
-    # Step 4: Validate token
-    info "Validating token..."
-    CF_API_TOKEN="$new_token"
-    export CF_API_TOKEN
-
-    if ! cf_token_verify; then
-        error "Token validation failed (${_cf_token_status})."
-        error "Make sure you copied the full token."
-        return 1
-    fi
-    success "Token is valid!"
-
-    # Step 5: Save to .env
-    env_set "CF_API_TOKEN" "$new_token"
-    success "Token saved to $ENV_FILE"
-
-    # Step 6: Discover account ID
+    # Step 3: Discover account ID
     echo ""
     info "Discovering account..."
     local account_id
@@ -3610,10 +3859,11 @@ cmd_login() {
     if [[ -n "$CF_ACCOUNT_ID" ]]; then
         success "Account ID saved: $CF_ACCOUNT_ID"
     else
-        warn "Could not discover account ID (tunnel status checks may not work)"
+        error "Could not discover account ID — tunnel bootstrap requires it."
+        return 1
     fi
 
-    # Step 7: Check permissions
+    # Step 4: Check permissions
     echo ""
     section_header "Permissions"
     if cf_check_permissions; then
@@ -3623,26 +3873,48 @@ cmd_login() {
         echo ""
         warn "Some permissions are missing. The token may need more access."
         dim "Go to: https://dash.cloudflare.com/profile/api-tokens"
-        dim "Edit the token and add the missing permissions."
+        dim "Edit the token and add: Zone DNS Edit, Zone Read, Account Cloudflare Tunnel Edit."
     fi
 
-    # Step 8: Check cert.pem scope
+    # Step 5: Check cert.pem scope
     echo ""
     cert_check_all
 
-    # Step 9: Summary
+    # Step 6: Ensure host tunnel (TUNNEL_ID + TUNNEL_TOKEN)
+    echo ""
+    section_header "Host Tunnel"
+    echo ""
+    dim "Ferry uses one shared Cloudflare Tunnel per host (not per app)."
+    dim "See docs/tunnel-id.md for the model."
+    echo ""
+    if ! cf_ensure_tunnel "$tunnel_name"; then
+        local tunnel_rc=$?
+        if [[ "$tunnel_rc" == "3" ]]; then
+            return 3
+        fi
+        error "API token is saved, but host tunnel setup failed."
+        dim "Fix Tunnel:Edit permission, then re-run: ferry login -y"
+        return 1
+    fi
+
+    # Step 7: Summary
     echo ""
     echo ""
     box "${C_SUCCESS}✓ Setup Complete${C_RESET}" \
         "" \
-        "  ${C_SUCCESS}✓${C_RESET} Create DNS records for any domain" \
-        "  ${C_SUCCESS}✓${C_RESET} Delete DNS records on app removal" \
-        "  ${C_SUCCESS}✓${C_RESET} Look up zones automatically"
+        "  ${C_SUCCESS}✓${C_RESET} Cloudflare API access" \
+        "  ${C_SUCCESS}✓${C_RESET} Host tunnel (TUNNEL_ID + TUNNEL_TOKEN)" \
+        "  ${C_SUCCESS}✓${C_RESET} DNS + ingress ready for ferry deploy"
     echo ""
-    echo -e "  cert.pem is no longer needed for DNS operations."
-    dim "(It's still used as a fallback if the API token doesn't work)"
+    if [[ -n "$TUNNEL_ID" ]]; then
+        kv "TUNNEL_ID" "$TUNNEL_ID"
+    fi
+    echo ""
+    dim "Next: docker compose up -d   # if the stack is not running yet"
+    dim "Then: ferry deploy <app>"
     echo ""
 }
+
 
 ###############################################################################
 # Interactive Selector
@@ -4010,6 +4282,7 @@ _ferry_init() {
     fi
 
     TUNNEL_ID="${TUNNEL_ID:-}"
+    TUNNEL_TOKEN="${TUNNEL_TOKEN:-}"
     CF_API_TOKEN="${CF_API_TOKEN:-}"
     CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-}"
     DOKKU_HOSTNAME="${DOKKU_HOSTNAME:-}"

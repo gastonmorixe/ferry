@@ -8,9 +8,10 @@ If you plan to deploy to domains without a zone cert, you need a Cloudflare API 
 
 ```bash
 ferry login
+# optional: ferry login --tunnel-name my-host-tunnel
 ```
 
-This saves `CF_API_TOKEN` and `CF_ACCOUNT_ID` to `.env`. Without it, DNS creation falls back to zone-scoped certs, limited to domains with a matching cert file.
+This saves `CF_API_TOKEN` and `CF_ACCOUNT_ID` to `.env`, and also ensures the host tunnel (`TUNNEL_ID` + `TUNNEL_TOKEN`) if those are missing. Without an API token, DNS creation falls back to zone-scoped certs, limited to domains with a matching cert file. See [tunnel-id.md](tunnel-id.md) for the shared-tunnel model.
 
 ## Non-interactive Deployment
 

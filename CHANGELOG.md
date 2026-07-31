@@ -2,6 +2,21 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.12.0] - 2026-07-31
+
+### Added
+- **`ferry login` host-tunnel bootstrap:** After saving the API token and discovering `CF_ACCOUNT_ID`, login ensures a remotely-managed Cloudflare Tunnel (`config_src: cloudflare`) via the API. It keeps a valid `TUNNEL_ID` + `TUNNEL_TOKEN` pair, fetches a missing connector token when only the ID is set, or lists/picks/creates a named tunnel (default name `ferry`). Values are written to `.env`. If `cloudflared` is already running, it is restarted so the new token applies.
+- **`ferry login --tunnel-name <name>`** — preferred tunnel name for create/select (default: `ferry`).
+
+### Changed
+- API token for login must include **Account → Cloudflare Tunnel → Edit** (no longer optional Tunnel:Read-only). Zone DNS Edit + Zone Read remain required for deploy DNS.
+- Compose connector auth is **`TUNNEL_TOKEN`** (`tunnel run`). Credentials live in Ferry `.env`, not a mounted `~/.cloudflared/<id>.json` or root-owned secret file.
+- Host `cloudflared` CLI is not required for tunnel bootstrap.
+
+### Docs
+- Rewrote [docs/tunnel-id.md](docs/tunnel-id.md) to lead with `ferry login` and remove the old "product gap" that claimed login did not set `TUNNEL_ID`.
+- Updated [docs/initial-setup.md](docs/initial-setup.md), [README.md](README.md), and [docs/deploying-apps.md](docs/deploying-apps.md) for the login → tunnel → deploy flow.
+
 ## [0.11.0] - 2026-05-17
 
 ### Fixed

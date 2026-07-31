@@ -90,20 +90,26 @@ cd ~/ferry
 
 ```bash
 cp .env.example .env
-# Edit .env: set TUNNEL_ID and DOKKU_HOSTNAME
+# Edit .env: set DOKKU_HOSTNAME
+# Leave TUNNEL_ID / TUNNEL_TOKEN blank — ferry login fills them
 ```
 
-### 3. Start the stack
+### 3. Set up Cloudflare API + host tunnel
+
+```bash
+ferry login
+# optional: ferry login --tunnel-name my-host-tunnel
+```
+
+This saves `CF_API_TOKEN`, discovers `CF_ACCOUNT_ID`, and ensures a remotely-managed host tunnel (`TUNNEL_ID` + `TUNNEL_TOKEN` in `.env`). Your API token needs Zone DNS Edit, Zone Read, and Account → Cloudflare Tunnel → Edit. No host `cloudflared` CLI required.
+
+### 4. Start the stack
 
 ```bash
 docker compose up -d
 ```
 
-### 4. Set up Cloudflare API access
-
-```bash
-ferry login
-```
+You can start compose before or after login. If cloudflared is already running when login writes a new token, Ferry restarts it.
 
 ### 5. Create or deploy your first app
 
@@ -132,7 +138,7 @@ Run `ferry` with no arguments for an interactive arrow-key menu, or pass a comma
 ```
 ferry                    Interactive menu
 ferry new [<name>]       Create a new app from a template
-ferry login              Set up Cloudflare API access
+ferry login              Set up Cloudflare API access + host tunnel
 ferry deploy [<name>]    Deploy a new app
 ferry remove [<name>]    Remove an app + DNS + ingress
 ferry prune reconcile    Reconcile orphan ingress rules
@@ -190,6 +196,7 @@ ferry help               Show help
 | Flag | Effect |
 |---|---|
 | `-t` / `--token` | Pass API token directly (skip interactive prompt) |
+| `--tunnel-name` | Preferred tunnel name when creating/selecting (default: `ferry`) |
 
 ---
 
@@ -232,8 +239,8 @@ ferry tune myapp -m 512 --runtime node -y
 # Remove an app (destroys app, DNS, ingress)
 ferry remove myapp -y
 
-# Set up API token non-interactively
-ferry login -t "your-api-token" -y
+# Set up API token + host tunnel non-interactively
+ferry login -t "your-api-token" --tunnel-name ferry -y
 
 # Pipe-safe: colors auto-disabled when output is not a TTY
 ferry status > status.txt
@@ -257,8 +264,9 @@ git push dokku main:master
 
 | Variable | Required | Description |
 |---|---|---|
-| `TUNNEL_ID` | Yes | Cloudflare tunnel UUID |
 | `DOKKU_HOSTNAME` | Yes | Base domain for default app hostnames |
+| `TUNNEL_ID` | Auto | Host Cloudflare tunnel UUID (set via `ferry login`) |
+| `TUNNEL_TOKEN` | Auto | Connector token for `cloudflared` (`tunnel run`; set via `ferry login`) |
 | `CF_API_TOKEN` | Auto | Cloudflare API token (set via `ferry login`) |
 | `CF_ACCOUNT_ID` | Auto | Cloudflare account ID (auto-discovered from token) |
 
@@ -288,6 +296,7 @@ Detailed guides in [`docs/`](docs/):
 | [Scaffolding Apps](docs/scaffolding-apps.md) | In-depth guide to `ferry new`, templates, output paths, and deploy flows |
 | [Deploy Guide: GitHub to Live](docs/deploy-guide-github-to-live.md) | End-to-end walkthrough from repo to live URL |
 | [Architecture](docs/architecture.md) | Container topology, networking, DNS, traffic flow |
+| [TUNNEL_ID / Shared Tunnel](docs/tunnel-id.md) | Why one host tunnel; `ferry login` bootstrap; vs per-app deploy |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and solutions |
 | [Initial Setup](docs/initial-setup.md) | First-time server setup reference |
 | [Cloudflare LLM Docs](docs/cloudflare-llms-index.md) | Cloudflare developer doc links |
@@ -355,6 +364,7 @@ ferry/
 │   ├── scaffolding-apps.md
 │   ├── deploy-guide-github-to-live.md
 │   ├── architecture.md
+│   ├── tunnel-id.md
 │   ├── troubleshooting.md
 │   ├── initial-setup.md
 │   └── cloudflare-llms-index.md
@@ -381,9 +391,10 @@ ferry/
 | Linux host | Any architecture supported by Docker (x86_64, arm64) |
 | Docker + Docker Compose | v29+ / v5+ recommended |
 | Cloudflare account | Free tier works (tunnel + DNS) |
-| `cloudflared` | On host, for initial tunnel creation only |
 | `bash`, `curl`, `jq`, `python3` + PyYAML | Used by the `ferry` script |
 | `gh` (GitHub CLI) | Optional, for `--repo` clone support |
+
+Host `cloudflared` CLI is optional/historical. Tunnel bootstrap uses the Cloudflare API via `ferry login`. The connector runs in Docker with `TUNNEL_TOKEN`.
 
 ---
 
