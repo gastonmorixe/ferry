@@ -90,3 +90,127 @@ setup() {
     assert_success
     grep -q '^TUNNEL_TOKEN=fetched-token$' "$ENV_FILE"
 }
+
+# ---------------------------------------------------------------------------
+# Explicit noninteractive tunnel selection
+# ---------------------------------------------------------------------------
+
+@test "explicit name creates instead of binding a sole mismatched tunnel under -y" {
+    YES=true
+    TUNNEL_ID=""
+    TUNNEL_TOKEN=""
+    ENV_FILE="$BATS_TEST_TMPDIR/.env"
+    CF_CALL_LOG="$BATS_TEST_TMPDIR/cf-calls"
+    : > "$ENV_FILE"
+    : > "$CF_CALL_LOG"
+    cf_api() {
+        printf '%s %s\n' "$1" "$2" >> "$CF_CALL_LOG"
+        if [[ "$1" == "GET" && "$2" == *'?is_deleted=false&per_page=50' ]]; then
+            echo '{"success":true,"errors":[],"result":[{"id":"other-id","name":"rpi5","deleted_at":null}]}'
+        elif [[ "$1" == "POST" && "$2" == "/accounts/acct-test/cfd_tunnel" ]]; then
+            echo '{"success":true,"errors":[],"result":{"id":"preferred-id","name":"beta","token":"created-token"}}'
+        else
+            echo '{"success":false,"errors":[{"message":"unexpected"}]}'
+        fi
+    }
+    _cf_maybe_restart_cloudflared() { return 0; }
+
+    run cf_ensure_tunnel "beta" true
+
+    assert_success
+    grep -q '^TUNNEL_ID=preferred-id$' "$ENV_FILE"
+    grep -q '^TUNNEL_TOKEN=created-token$' "$ENV_FILE"
+    grep -q '^POST /accounts/acct-test/cfd_tunnel$' "$CF_CALL_LOG"
+    ! grep -q '/cfd_tunnel/other-id/token$' "$CF_CALL_LOG"
+}
+
+@test "explicit name creates instead of choosing among multiple mismatched tunnels under -y" {
+    YES=true
+    TUNNEL_ID=""
+    TUNNEL_TOKEN=""
+    ENV_FILE="$BATS_TEST_TMPDIR/.env"
+    CF_CALL_LOG="$BATS_TEST_TMPDIR/cf-calls"
+    : > "$ENV_FILE"
+    : > "$CF_CALL_LOG"
+    cf_api() {
+        printf '%s %s\n' "$1" "$2" >> "$CF_CALL_LOG"
+        if [[ "$1" == "GET" && "$2" == *'?is_deleted=false&per_page=50' ]]; then
+            echo '{"success":true,"errors":[],"result":[{"id":"first-id","name":"rpi5","deleted_at":null},{"id":"second-id","name":"other","deleted_at":null}]}'
+        elif [[ "$1" == "POST" && "$2" == "/accounts/acct-test/cfd_tunnel" ]]; then
+            echo '{"success":true,"errors":[],"result":{"id":"preferred-id","name":"beta","token":"created-token"}}'
+        else
+            echo '{"success":false,"errors":[{"message":"unexpected"}]}'
+        fi
+    }
+    _cf_maybe_restart_cloudflared() { return 0; }
+
+    run cf_ensure_tunnel "beta" true
+
+    assert_success
+    grep -q '^TUNNEL_ID=preferred-id$' "$ENV_FILE"
+    grep -q '^POST /accounts/acct-test/cfd_tunnel$' "$CF_CALL_LOG"
+    ! grep -q '/cfd_tunnel/first-id/token$' "$CF_CALL_LOG"
+    ! grep -q '/cfd_tunnel/second-id/token$' "$CF_CALL_LOG"
+}
+
+@test "explicit name binds its exact active tunnel under -y" {
+    YES=true
+    TUNNEL_ID=""
+    TUNNEL_TOKEN=""
+    ENV_FILE="$BATS_TEST_TMPDIR/.env"
+    CF_CALL_LOG="$BATS_TEST_TMPDIR/cf-calls"
+    : > "$ENV_FILE"
+    : > "$CF_CALL_LOG"
+    cf_api() {
+        printf '%s %s\n' "$1" "$2" >> "$CF_CALL_LOG"
+        if [[ "$1" == "GET" && "$2" == *'?is_deleted=false&per_page=50' ]]; then
+            echo '{"success":true,"errors":[],"result":[{"id":"other-id","name":"rpi5","deleted_at":null},{"id":"preferred-id","name":"beta","deleted_at":null}]}'
+        elif [[ "$1" == "GET" && "$2" == "/accounts/acct-test/cfd_tunnel/preferred-id/token" ]]; then
+            echo '{"success":true,"errors":[],"result":"matched-token"}'
+        elif [[ "$1" == "POST" && "$2" == "/accounts/acct-test/cfd_tunnel" ]]; then
+            echo '{"success":false,"errors":[{"message":"must not create"}]}'
+        else
+            echo '{"success":false,"errors":[{"message":"unexpected"}]}'
+        fi
+    }
+    _cf_maybe_restart_cloudflared() { return 0; }
+
+    run cf_ensure_tunnel "beta" true
+
+    assert_success
+    grep -q '^TUNNEL_ID=preferred-id$' "$ENV_FILE"
+    grep -q '^TUNNEL_TOKEN=matched-token$' "$ENV_FILE"
+    ! grep -q '^POST ' "$CF_CALL_LOG"
+}
+
+@test "explicit name reconfigures a configured foreign tunnel ID" {
+    YES=true
+    TUNNEL_ID="foreign-id"
+    TUNNEL_TOKEN="foreign-token"
+    export TUNNEL_ID TUNNEL_TOKEN
+    ENV_FILE="$BATS_TEST_TMPDIR/.env"
+    CF_CALL_LOG="$BATS_TEST_TMPDIR/cf-calls"
+    : > "$ENV_FILE"
+    : > "$CF_CALL_LOG"
+    cf_api() {
+        printf '%s %s\n' "$1" "$2" >> "$CF_CALL_LOG"
+        if [[ "$1" == "GET" && "$2" == "/accounts/acct-test/cfd_tunnel/foreign-id" ]]; then
+            echo '{"success":true,"errors":[],"result":{"id":"foreign-id","name":"rpi5","deleted_at":null}}'
+        elif [[ "$1" == "GET" && "$2" == *'?is_deleted=false&per_page=50' ]]; then
+            echo '{"success":true,"errors":[],"result":[]}'
+        elif [[ "$1" == "POST" && "$2" == "/accounts/acct-test/cfd_tunnel" ]]; then
+            echo '{"success":true,"errors":[],"result":{"id":"preferred-id","name":"beta","token":"created-token"}}'
+        else
+            echo '{"success":false,"errors":[{"message":"unexpected"}]}'
+        fi
+    }
+    _cf_maybe_restart_cloudflared() { return 0; }
+
+    run cf_ensure_tunnel "beta" true
+
+    assert_success
+    grep -q '^TUNNEL_ID=preferred-id$' "$ENV_FILE"
+    grep -q '^TUNNEL_TOKEN=created-token$' "$ENV_FILE"
+    grep -q '^GET /accounts/acct-test/cfd_tunnel/foreign-id$' "$CF_CALL_LOG"
+    grep -q '^POST /accounts/acct-test/cfd_tunnel$' "$CF_CALL_LOG"
+}

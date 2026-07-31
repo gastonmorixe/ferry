@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.12.1"
+FERRY_VERSION="0.12.2"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -505,10 +505,11 @@ _cf_maybe_restart_cloudflared() {
 
 cf_ensure_tunnel() {
     # Ensure host TUNNEL_ID + TUNNEL_TOKEN exist in .env (remotely-managed tunnel).
-    # Usage: cf_ensure_tunnel [preferred_name]
+    # Usage: cf_ensure_tunnel [preferred_name] [require_exact_name]
     # Idempotent: keeps a valid existing pair; fills missing token; otherwise list/pick/create.
     local preferred_name="${1:-ferry}"
-    local list_resp count tunnel_id="" tunnel_name="" tunnel_token=""
+    local require_exact_name="${2:-false}"
+    local list_resp count match_id="" match_name="" tunnel_id="" tunnel_name="" tunnel_token=""
 
     if [[ -z "$CF_ACCOUNT_ID" ]]; then
         error "CF_ACCOUNT_ID required for tunnel setup. Re-run ferry login after account discovery succeeds."
@@ -524,26 +525,56 @@ cf_ensure_tunnel() {
             deleted=$(echo "$verify_resp" | jq -r '.result.deleted_at // empty')
             if [[ -z "$deleted" ]]; then
                 tunnel_name=$(echo "$verify_resp" | jq -r '.result.name // empty')
-                success "Host tunnel ready: ${tunnel_name:-tunnel} ($TUNNEL_ID)"
-                _cf_maybe_restart_cloudflared
-                return 0
+                if ! $require_exact_name || [[ "$tunnel_name" == "$preferred_name" ]]; then
+                    success "Host tunnel ready: ${tunnel_name:-tunnel} ($TUNNEL_ID)"
+                    _cf_maybe_restart_cloudflared
+                    return 0
+                fi
+                warn "Configured TUNNEL_ID names '$tunnel_name', not requested '$preferred_name'. Reconfiguring..."
+            else
+                warn "Configured TUNNEL_ID is missing or deleted in Cloudflare. Reconfiguring..."
             fi
+        else
+            warn "Configured TUNNEL_ID is missing or deleted in Cloudflare. Reconfiguring..."
         fi
-        warn "Configured TUNNEL_ID is missing or deleted in Cloudflare. Reconfiguring..."
+        if $require_exact_name; then
+            TUNNEL_ID=""
+            TUNNEL_TOKEN=""
+        fi
     fi
 
-    # Path B: ID set, token missing — fetch connector token
+    # Path B: ID set, token missing — preserve legacy token fetch unless a name was explicit.
     if [[ -n "$TUNNEL_ID" && -z "${TUNNEL_TOKEN:-}" ]]; then
-        info "Fetching connector token for TUNNEL_ID=$TUNNEL_ID..."
-        tunnel_token=$(cf_tunnel_get_token "$TUNNEL_ID") || {
-            error "Could not fetch TUNNEL_TOKEN for $TUNNEL_ID."
-            error "Token needs Account → Cloudflare Tunnel → Edit, and the tunnel must be remotely managed (config_src=cloudflare)."
-            return 1
-        }
-        env_set "TUNNEL_TOKEN" "$tunnel_token"
-        success "TUNNEL_TOKEN saved to $ENV_FILE"
-        _cf_maybe_restart_cloudflared
-        return 0
+        if $require_exact_name; then
+            local verify_resp deleted
+            verify_resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}" 2>/dev/null) || true
+            if cf_api_ok "$verify_resp" 2>/dev/null; then
+                deleted=$(echo "$verify_resp" | jq -r '.result.deleted_at // empty')
+                if [[ -z "$deleted" ]]; then
+                    tunnel_name=$(echo "$verify_resp" | jq -r '.result.name // empty')
+                    if [[ "$tunnel_name" != "$preferred_name" ]]; then
+                        warn "Configured TUNNEL_ID names '$tunnel_name', not requested '$preferred_name'. Reconfiguring..."
+                        TUNNEL_ID=""
+                    fi
+                else
+                    TUNNEL_ID=""
+                fi
+            else
+                TUNNEL_ID=""
+            fi
+        fi
+        if [[ -n "$TUNNEL_ID" ]]; then
+            info "Fetching connector token for TUNNEL_ID=$TUNNEL_ID..."
+            tunnel_token=$(cf_tunnel_get_token "$TUNNEL_ID") || {
+                error "Could not fetch TUNNEL_TOKEN for $TUNNEL_ID."
+                error "Token needs Account → Cloudflare Tunnel → Edit, and the tunnel must be remotely managed (config_src=cloudflare)."
+                return 1
+            }
+            env_set "TUNNEL_TOKEN" "$tunnel_token"
+            success "TUNNEL_TOKEN saved to $ENV_FILE"
+            _cf_maybe_restart_cloudflared
+            return 0
+        fi
     fi
 
     # Path C: list existing tunnels and pick / create
@@ -556,8 +587,22 @@ cf_ensure_tunnel() {
     fi
 
     count=$(echo "$list_resp" | jq '[.result[] | select((.deleted_at // null) == null)] | length')
+    match_id=$(echo "$list_resp" | jq -r --arg n "$preferred_name" \
+        '[.result[] | select((.deleted_at // null) == null and .name == $n)][0].id // empty')
+    match_name=$(echo "$list_resp" | jq -r --arg n "$preferred_name" \
+        '[.result[] | select((.deleted_at // null) == null and .name == $n)][0].name // empty')
 
-    if ((count == 0)); then
+    # An explicit noninteractive name is a safety boundary: never adopt another tunnel.
+    # With no exact match, create the requested remote-managed tunnel before legacy branches.
+    if $require_exact_name && $YES && [[ -z "$match_id" ]]; then
+        info "No active tunnel named '${preferred_name}'. Creating remotely-managed tunnel..."
+        local created
+        created=$(cf_tunnel_create "$preferred_name") || return 1
+        tunnel_id=$(echo "$created" | cut -f1)
+        tunnel_name=$(echo "$created" | cut -f2)
+        tunnel_token=$(echo "$created" | cut -f3)
+        success "Created tunnel: $tunnel_name ($tunnel_id)"
+    elif ((count == 0)); then
         info "No tunnels found. Creating remotely-managed tunnel '${preferred_name}'..."
         if ! $YES && [[ -t 0 ]]; then
             local create_choice=0
@@ -612,12 +657,6 @@ cf_ensure_tunnel() {
         fi
     else
         # Multiple tunnels: prefer name match, else interactive pick / -y heuristics
-        local match_id match_name
-        match_id=$(echo "$list_resp" | jq -r --arg n "$preferred_name" \
-            '[.result[] | select((.deleted_at // null) == null and .name == $n)][0].id // empty')
-        match_name=$(echo "$list_resp" | jq -r --arg n "$preferred_name" \
-            '[.result[] | select((.deleted_at // null) == null and .name == $n)][0].name // empty')
-
         if [[ -n "$match_id" ]] && $YES; then
             tunnel_id="$match_id"
             tunnel_name="$match_name"
@@ -3703,13 +3742,14 @@ cmd_help() {
 cmd_login() {
     local provided_token=""
     local tunnel_name="ferry"
+    local tunnel_name_explicit=false
     local keep_existing_token=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -t|--token) provided_token="$2"; shift 2 ;;
-            --tunnel-name) tunnel_name="$2"; shift 2 ;;
+            --tunnel-name) tunnel_name="$2"; tunnel_name_explicit=true; shift 2 ;;
             -y|--yes)   YES=true; shift ;;
             -*)         error "Unknown flag: $1"; return 1 ;;
             *)          shift ;;
@@ -3887,7 +3927,7 @@ cmd_login() {
     dim "Ferry uses one shared Cloudflare Tunnel per host (not per app)."
     dim "See docs/tunnel-id.md for the model."
     echo ""
-    if ! cf_ensure_tunnel "$tunnel_name"; then
+    if ! cf_ensure_tunnel "$tunnel_name" "$tunnel_name_explicit"; then
         local tunnel_rc=$?
         if [[ "$tunnel_rc" == "3" ]]; then
             return 3

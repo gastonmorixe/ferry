@@ -2,6 +2,15 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.12.2] - 2026-07-31
+
+### Fixed
+- **Explicit noninteractive tunnel names now select safely.** `ferry login -y --tunnel-name <name>` binds only an exact active name match. If no matching tunnel exists, it creates the requested remotely managed tunnel rather than adopting the sole available tunnel or arbitrarily choosing from multiple tunnels.
+- **Explicit names protect configured tunnel IDs.** When `--tunnel-name` is supplied, a configured `TUNNEL_ID` whose verified name differs is cleared in memory and re-resolved by exact name/create. Stale or deleted configured IDs take the same safe fallback. Login without an explicit tunnel name retains its prior selection behavior.
+
+### Tests
+- Added mocked regression coverage for sole-mismatch create, multi-mismatch create, exact-name bind, and configured foreign-ID reconfiguration. No Cloudflare API, DNS, login, VM, or deployment action was performed for this release.
+
 ## [0.12.1] - 2026-07-31
 
 ### Changed
