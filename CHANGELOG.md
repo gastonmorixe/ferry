@@ -2,7 +2,7 @@
 
 All notable changes to Ferry are documented here.
 
-## [Unreleased]
+## [0.12.3] - 2026-08-31
 
 ### Fixed
 - **`ferry login` permission probe:** Split tunnel checks into **Tunnel:Read** (list) and **Tunnel:Edit** (read tunnel configuration). Zone-scoped tokens that could list an empty tunnel set no longer pass as fully authorized.
