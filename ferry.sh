@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.12.2"
+FERRY_VERSION="0.12.3"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -396,7 +396,7 @@ cf_check_permissions() {
         all_ok=false
     fi
 
-    # Test 2: DNS (try reading records from first zone)
+    # Test 2: DNS read probe (Edit is required for deploy; this only verifies read access)
     local dns_ok=false
     if $zones_ok && ((zone_count > 0)); then
         local first_zone_id
@@ -408,25 +408,47 @@ cf_check_permissions() {
         fi
     fi
     if $dns_ok; then
-        echo -e "    ${C_SUCCESS}✓${C_RESET} DNS:Edit           — can manage DNS records"
+        echo -e "    ${C_SUCCESS}✓${C_RESET} DNS:Edit           — can read DNS records (Edit required for deploy)"
     else
         echo -e "    ${C_ERROR}✗${C_RESET} DNS:Edit           — cannot access DNS records"
         all_ok=false
     fi
 
-    # Test 3: Tunnels (Account:Cloudflare Tunnel:Read)
-    local tunnel_ok=false
+    # Test 3: Tunnel:Read — list tunnels
+    local tunnel_list_ok=false tunnel_resp=""
     if [[ -n "$CF_ACCOUNT_ID" ]]; then
-        local tunnel_resp
-        tunnel_resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?per_page=1" 2>/dev/null) || true
+        tunnel_resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?per_page=50" 2>/dev/null) || true
         if cf_api_ok "$tunnel_resp" 2>/dev/null; then
-            tunnel_ok=true
+            tunnel_list_ok=true
         fi
     fi
-    if $tunnel_ok; then
-        echo -e "    ${C_SUCCESS}✓${C_RESET} Tunnel:Read/Edit   — can list tunnels"
+    if $tunnel_list_ok; then
+        echo -e "    ${C_SUCCESS}✓${C_RESET} Tunnel:Read        — can list tunnels"
     else
-        echo -e "    ${C_ERROR}✗${C_RESET} Tunnel:Read/Edit   — cannot list tunnels (required for login tunnel bootstrap)"
+        echo -e "    ${C_ERROR}✗${C_RESET} Tunnel:Read        — cannot list tunnels (required for login tunnel bootstrap)"
+        all_ok=false
+    fi
+
+    # Test 4: Tunnel:Edit — read tunnel configuration (zone-scoped tokens often fail here)
+    local tunnel_edit_ok=false tunnel_probe_id=""
+    if $tunnel_list_ok && [[ -n "$CF_ACCOUNT_ID" ]]; then
+        if [[ -n "$TUNNEL_ID" ]]; then
+            tunnel_probe_id="$TUNNEL_ID"
+        else
+            tunnel_probe_id=$(echo "$tunnel_resp" | jq -r '.result[0].id // empty')
+        fi
+        if [[ -n "$tunnel_probe_id" ]]; then
+            local cfg_resp
+            cfg_resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${tunnel_probe_id}/configurations" 2>/dev/null) || true
+            if cf_api_ok "$cfg_resp" 2>/dev/null; then
+                tunnel_edit_ok=true
+            fi
+        fi
+    fi
+    if $tunnel_edit_ok; then
+        echo -e "    ${C_SUCCESS}✓${C_RESET} Tunnel:Edit        — can read tunnel config"
+    else
+        echo -e "    ${C_ERROR}✗${C_RESET} Tunnel:Edit        — cannot read tunnel config (Account → Cloudflare Tunnel → Edit)"
         all_ok=false
     fi
 
@@ -1086,15 +1108,20 @@ print(json.dumps(rules))
 app_effective_status() {
     local name="$1"
     local domain="$2"
-    local runtime_status has_ingress="no"
+    local runtime_status has_ingress="no" ingress_state
     runtime_status=$(dokku_app_status "$name")
-    if [[ -n "$domain" ]] && [[ "$(yaml_has_hostname "$domain")" == "yes" ]]; then
-        has_ingress="yes"
+    if [[ -n "$domain" ]]; then
+        ingress_state=$(yaml_has_hostname "$domain") || ingress_state="unknown"
+        case "$ingress_state" in
+            yes) has_ingress="yes" ;;
+            unknown) has_ingress="unknown" ;;
+            *) has_ingress="no" ;;
+        esac
     fi
 
     case "$runtime_status" in
         running)
-            if [[ "$has_ingress" == "yes" ]]; then
+            if [[ "$has_ingress" == "yes" || "$has_ingress" == "unknown" ]]; then
                 echo "running"
             else
                 echo "unroutable"
@@ -1110,20 +1137,45 @@ app_effective_status() {
 # Tunnel Ingress Operations (via Cloudflare API)
 ###############################################################################
 
-# Fetch current tunnel ingress from the Cloudflare API.
-# Prints JSON array of ingress rules to stdout.
-_tunnel_get_ingress() {
+# Cached tunnel ingress (one Cloudflare API fetch per status run).
+_INGRESS_CACHE=""
+_INGRESS_CACHE_ERROR=""
+_INGRESS_CACHE_LOADED=false
+
+tunnel_ingress_reset_cache() {
+    _INGRESS_CACHE=""
+    _INGRESS_CACHE_ERROR=""
+    _INGRESS_CACHE_LOADED=false
+}
+
+tunnel_ingress_fetch() {
+    if $_INGRESS_CACHE_LOADED; then
+        [[ -z "$_INGRESS_CACHE_ERROR" ]]
+        return
+    fi
+    _INGRESS_CACHE_LOADED=true
     local response
-    response=$(cf_api "GET" "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" 2>/dev/null) || return 1
-    printf '%s' "$response" | python3 -c "
+    response=$(cf_api "GET" "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" 2>/dev/null) || {
+        _INGRESS_CACHE_ERROR="fetch failed"
+        return 1
+    }
+    if ! cf_api_ok "$response" 2>/dev/null; then
+        _INGRESS_CACHE_ERROR=$(cf_api_error "$response")
+        return 1
+    fi
+    _INGRESS_CACHE=$(printf '%s' "$response" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-if not data.get('success'):
-    print('ERROR: ' + str(data.get('errors',[])), file=sys.stderr)
-    sys.exit(1)
 ingress = data.get('result',{}).get('config',{}).get('ingress',[])
 print(json.dumps(ingress))
-"
+")
+}
+
+# Fetch current tunnel ingress from cache/API.
+# Prints JSON array of ingress rules to stdout.
+_tunnel_get_ingress() {
+    tunnel_ingress_fetch || return 1
+    printf '%s' "$_INGRESS_CACHE"
 }
 
 # Push a full ingress list to the Cloudflare API.
@@ -1157,7 +1209,11 @@ for r in rules:
 yaml_has_hostname() {
     local hostname="$1"
     local ingress
-    ingress=$(_tunnel_get_ingress) || { echo "no"; return 1; }
+    if ! tunnel_ingress_fetch; then
+        echo "unknown"
+        return 1
+    fi
+    ingress="$_INGRESS_CACHE"
     printf '%s' "$ingress" | python3 -c "
 import json, sys
 hostname = sys.argv[1]
@@ -1997,6 +2053,14 @@ cmd_status() {
     section_header "Ingress Rules"
     echo ""
 
+    local ingress_available=true
+    tunnel_ingress_reset_cache
+    if ! tunnel_ingress_fetch; then
+        ingress_available=false
+        warn "Cannot read tunnel ingress: ${_INGRESS_CACHE_ERROR:-unknown error}"
+        dim "    Fix Account → Cloudflare Tunnel → Edit on your API token, then re-run: ferry login"
+    fi
+
     local i=1
     while IFS=$'\t' read -r hostname service; do
         if [[ "$hostname" == "(catch-all)" ]]; then
@@ -2010,6 +2074,11 @@ cmd_status() {
     # --- Cross-validation ---
     echo ""
     local warnings=0
+    if ! $ingress_available; then
+        warn "Skipping ingress cross-validation (tunnel config unavailable)"
+        echo ""
+        return 0
+    fi
     local all_domains=""
     all_domains=$(dokku_list_all_domains 2>/dev/null) || true
 

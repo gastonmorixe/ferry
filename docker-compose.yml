@@ -28,7 +28,9 @@ services:
     volumes:
       - dokku-data:/mnt/dokku
       - /var/run/docker.sock:/var/run/docker.sock
-    pid: host
+    # No pid: host / CAP_SYS_ADMIN by default.
+    # Generated apps use HTTP path healthchecks in app.json (see generators/_shared).
+    # Dokku's default listening probe may warn without host PID + SYS_ADMIN; that warn is non-fatal.
     mem_limit: 256m
     networks:
       - webserver

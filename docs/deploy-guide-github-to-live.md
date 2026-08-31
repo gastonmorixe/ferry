@@ -145,7 +145,7 @@ This triggers the full build pipeline:
 3. Installs dependencies
 4. Runs the build (e.g. `next build`)
 5. Creates a container image
-6. Runs health checks (port listening + uptime)
+6. Runs health checks (HTTP path from `app.json`, plus Dokku uptime)
 7. Starts the app and reloads nginx
 8. Reports the live URL
 
@@ -268,11 +268,14 @@ Any domain in the Cloudflare account can be used. Check with `ferry status` to s
 
 Some buildpacks may not support your architecture. Fix: add a `Dockerfile` to your repo.
 
-### Health check fails: "port listening check"
+### Health check fails (HTTP or listening)
 
-Your app must listen on `0.0.0.0` (not `127.0.0.1` or `localhost`). Most frameworks do this by default when `$PORT` is set.
+Ferry generators ship an `app.json` startup check that hits an HTTP path (`/health`, or `/` for static React). That is the hard gate for zero-downtime deploys. Your app must:
 
-The "unable to enter the container to check that the process is bound" warning is cosmetic on Dokku with Docker's default PID namespace. It still deploys.
+1. Listen on `0.0.0.0` (not `127.0.0.1` or `localhost`)
+2. Serve the health path on the port set in `app.json` / `EXPOSE`
+
+Dokku may also emit a default "port listening check" / `nsenter` warning when Dokku does not share the host PID namespace. That warning is non-fatal and can be ignored when the HTTP check passes. Prefer fixing the HTTP health endpoint over granting Dokku `pid: host` or `CAP_SYS_ADMIN`.
 
 ### DNS doesn't resolve after deploy
 

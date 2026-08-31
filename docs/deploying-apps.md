@@ -193,7 +193,7 @@ Remember: each domain also needs a Cloudflare Tunnel DNS route and an ingress ru
 - Always include a `.dockerignore` to exclude `node_modules`, `.git`, etc.
 - Use `COPY package.json package-lock.json ./` + `RUN npm ci` before `COPY . .` to leverage Docker layer caching
 - Expose the port your app listens on with `EXPOSE`
-- Dokku detects the `EXPOSE` port automatically for health checks
+- Ferry generators ship an `app.json` HTTP startup check (`/health`, or `/` for static React). That is the hard zero-downtime gate. Dokku may also warn about a default port-listening probe when Dokku does not share the host PID namespace; ignore that warning when the HTTP check passes.
 - Use alpine-based images to keep builds fast
 
 ## Buildpacks (Alternative to Dockerfile)

@@ -335,13 +335,13 @@ dokku logs test-app -t
 
 ### App health check fails
 
-Dokku runs a port listening check. Your app must:
+Generated apps include an `app.json` HTTP startup check (path `/health` or `/`). Your app must:
 
 1. Listen on `0.0.0.0` (not `127.0.0.1` or `localhost`)
-2. Listen on the port you `EXPOSE` in the Dockerfile
-3. Start within the health check timeout (default 60s)
+2. Listen on the port you `EXPOSE` / set in `app.json`
+3. Respond on the health path within the check timeout
 
-The "unable to enter the container to check that the process is bound to the correct port" warning is cosmetic in containerized Dokku and can be ignored as long as the uptime check passes.
+Dokku's default listening / `nsenter` warning is cosmetic when Dokku runs without host PID namespace or `CAP_SYS_ADMIN`. Ignore it if the HTTP check and uptime check pass. Do not add `privileged: true` to Dokku for healthchecks.
 
 ### Rebuild from scratch
 

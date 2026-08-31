@@ -2,6 +2,22 @@
 
 All notable changes to Ferry are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **`ferry login` permission probe:** Split tunnel checks into **Tunnel:Read** (list) and **Tunnel:Edit** (read tunnel configuration). Zone-scoped tokens that could list an empty tunnel set no longer pass as fully authorized.
+- **`ferry status` ingress errors:** Tunnel config API failures show one actionable warning instead of repeated raw `ERROR: [{'code':…}]` lines. Ingress is fetched once per status run and cached for app routing checks.
+- **macOS generator templates:** `sed -i` in shared helpers now uses a portable `sed_inplace` wrapper (BSD sed requires `-i ''`), fixing `ferry new` on macOS.
+
+### Changed
+- **Least-privilege Dokku compose:** Removed default `pid: host` from `docker-compose.yml`. Generated apps already use HTTP path healthchecks in `app.json`; Dokku's default listening probe may warn without host PID namespace or `CAP_SYS_ADMIN`, but that warning is non-fatal when the HTTP check passes.
+
+### Docs
+- Clarified HTTP vs listening healthchecks in deploy guide, troubleshooting, and deploying-apps.
+
+### Tests
+- Added `test/unit/cf_permissions.bats` for permission probing and ingress cache behavior.
+
 ## [0.12.2] - 2026-07-31
 
 ### Fixed

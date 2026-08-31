@@ -89,5 +89,5 @@ template_sub_all "$OUTPUT_DIR"
 
 # Substitute {{APP_NAME_CAMEL}} (not handled by shared template_sub)
 find "$OUTPUT_DIR" -type f -print0 | while IFS= read -r -d '' f; do
-    sed -i "s|{{APP_NAME_CAMEL}}|${APP_NAME_CAMEL}|g" "$f"
+    sed_inplace "s|{{APP_NAME_CAMEL}}|${APP_NAME_CAMEL}|g" "$f"
 done

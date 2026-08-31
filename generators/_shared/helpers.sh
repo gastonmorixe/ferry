@@ -3,6 +3,15 @@
 
 SHARED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Portable in-place sed (BSD sed on macOS requires -i '').
+sed_inplace() {
+	if sed --version >/dev/null 2>&1; then
+		sed -i "$@"
+	else
+		sed -i '' "$@"
+	fi
+}
+
 # Copy a .template file, stripping the .template extension
 # Usage: template_copy <src> <dest_dir> [<dest_name>]
 template_copy() {
@@ -19,7 +28,7 @@ template_sub() {
     local file="$1"
     local year
     year="$(date +%Y)"
-    sed -i \
+    sed_inplace \
         -e "s|{{APP_NAME}}|${APP_NAME}|g" \
         -e "s|{{APP_PORT}}|${APP_PORT}|g" \
         -e "s|{{FERRY_VERSION}}|${FERRY_VERSION}|g" \
@@ -105,7 +114,7 @@ shared_ipdb_assets() {
 shared_app_json() {
     local dest_dir="$1" health_path="${2:-/health}"
     cp "$SHARED_DIR/app.json.template" "$dest_dir/app.json"
-    sed -i "s|{{HEALTHCHECK_PATH}}|${health_path}|g" "$dest_dir/app.json"
+    sed_inplace "s|{{HEALTHCHECK_PATH}}|${health_path}|g" "$dest_dir/app.json"
 }
 
 # Count files in the output directory (for reporting)
