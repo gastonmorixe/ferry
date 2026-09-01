@@ -2,6 +2,16 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.12.4] - 2026-09-01
+
+### Fixed
+- **502 after Dokku recreate:** `cloudflared` now waits for Dokku to be **healthy** (`depends_on: service_healthy`) instead of merely started. Prevents tunnel traffic to `http://dokku:80` while nginx is still booting.
+- **Dokku healthcheck:** Proves nginx `:80` routes with a **Host header** (`FERRY_HEALTHCHECK_HOST` in `.env`). Bare `GET /` can empty-reply while `:18080/_dokku/health` passes too early.
+- **`ferry reload`:** Waits for Dokku healthy before restarting cloudflared. New `stack_refresh()` recreates Dokku then restarts cloudflared in order.
+
+### Docs
+- Troubleshooting: Dokku recreate 502 window, cloudflared EOF on `dokku:80`, and `ferry reload` recovery steps.
+
 ## [0.12.3] - 2026-08-31
 
 ### Fixed

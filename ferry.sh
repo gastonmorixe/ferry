@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.12.3"
+FERRY_VERSION="0.12.4"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -1581,6 +1581,34 @@ _probe_container_dns() {
 # Cloudflared Operations
 ###############################################################################
 
+dokku_wait_healthy() {
+    local attempts=0
+    local max_attempts=60
+    info "Waiting for Dokku to accept traffic on :80..."
+    while ((attempts < max_attempts)); do
+        local status
+        status=$(docker inspect dokku --format '{{.State.Health.Status}}' 2>/dev/null || echo "none")
+        if [[ "$status" == "healthy" ]]; then
+            success "Dokku is healthy"
+            return 0
+        fi
+        if [[ "$status" == "unhealthy" ]]; then
+            warn "Dokku healthcheck reported unhealthy (attempt $((attempts + 1))/$max_attempts)"
+        fi
+        sleep 5
+        ((attempts++)) || true
+    done
+    error "Timed out waiting for Dokku to become healthy"
+    return 1
+}
+
+stack_refresh() {
+    info "Refreshing Ferry stack (Dokku then cloudflared)..."
+    docker compose -f "$COMPOSE_FILE" up -d dokku 2>&1
+    dokku_wait_healthy || return 1
+    cloudflared_restart
+}
+
 cloudflared_restart() {
     info "Restarting cloudflared..."
     # Use 'up -d' instead of 'restart' — restart cannot recover a container
@@ -3082,6 +3110,9 @@ cmd_reload() {
     fi
 
     echo ""
+    if docker inspect dokku >/dev/null 2>&1; then
+        dokku_wait_healthy || warn "Dokku not healthy yet — cloudflared may 502 until nginx :80 is up"
+    fi
     cloudflared_restart
     echo ""
 }

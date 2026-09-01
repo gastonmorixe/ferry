@@ -13,6 +13,6 @@ setup() {
     assert_success
 }
 
-@test "Ferry release version is 0.12.3" {
-    assert_equal "$FERRY_VERSION" "0.12.3"
+@test "Ferry release version is 0.12.4" {
+    assert_equal "$FERRY_VERSION" "0.12.4"
 }

@@ -31,7 +31,23 @@ After restarting Dokku, wait ~15 seconds for it to fully initialize before runni
 
 ### Dokku container was recreated and apps don't respond
 
-When the Dokku container is recreated (`docker compose up -d` after a config change), SSH host keys regenerate. Fix:
+When the Dokku container is recreated (`docker compose up -d` after a config change), public URLs may return **502** until nginx inside Dokku is listening on `:80` again (~30–90s). This is **not** caused by removing `pid: host` — that flag is only for Dokku's optional `nsenter` listening checks during deploy. Tunnel routing uses Docker DNS (`http://dokku:80`) and does not need host PID namespace.
+
+**Symptom:** `cloudflared` logs `connection refused` or `EOF` for `originService=http://dokku:80` while app containers are still running.
+
+**Fix:**
+
+```bash
+cd ~/ferry   # or /opt/ferry on a VM
+./ferry.sh reload -y    # waits for Dokku healthy, then restarts cloudflared
+# or, after a compose change that recreates Dokku:
+docker compose up -d dokku
+./ferry.sh reload -y
+```
+
+Ferry's compose healthcheck verifies nginx `:80` with a **Host header** (`FERRY_HEALTHCHECK_HOST` in `.env`, e.g. `beta.example.com`) before cloudflared starts (`depends_on: service_healthy`). Bare `GET /` on `:80` can empty-reply while `:18080/_dokku/health` passes early — do not use `:18080` alone. If you recreate Dokku alone, run `ferry reload` so cloudflared does not serve traffic to a dead origin.
+
+SSH host keys also regenerate on Dokku recreate. Fix:
 
 ```bash
 # Remove old host keys
@@ -155,7 +171,7 @@ Common errors:
 | `permission denied` on credentials.json | `chmod 644 ~/.cloudflared/<tunnel-id>.json` |
 | `tunnel not found` | Verify tunnel ID in `config.yml` matches the credentials file |
 | `server misbehaving` on DNS lookup | DNS inside container is broken. See "DNS Issues" above |
-| `failed to sufficiently increase receive buffer` | Warning only, safe to ignore |
+| `Unable to reach the origin service` / `EOF` on `http://dokku:80` | Dokku nginx was not ready yet (common right after `docker compose up` or a Dokku container recreate). Wait for `docker compose ps` to show dokku **healthy**, then restart cloudflared if errors persist: `docker compose up -d cloudflared`. Ferry v0.12.4+ waits for dokku health before starting cloudflared. |
 
 ### Verify tunnel is connected
 
