@@ -1154,28 +1154,26 @@ tunnel_ingress_fetch() {
         return
     fi
     _INGRESS_CACHE_LOADED=true
-    local response
-    response=$(cf_api "GET" "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" 2>/dev/null) || {
+    if ! _INGRESS_CACHE=$(_tunnel_get_ingress 2>/dev/null); then
         _INGRESS_CACHE_ERROR="fetch failed"
         return 1
-    }
+    fi
+}
+
+# Fetch current tunnel ingress from Cloudflare API (tests may override).
+# Prints JSON array of ingress rules to stdout.
+_tunnel_get_ingress() {
+    local response
+    response=$(cf_api "GET" "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" 2>/dev/null) || return 1
     if ! cf_api_ok "$response" 2>/dev/null; then
-        _INGRESS_CACHE_ERROR=$(cf_api_error "$response")
         return 1
     fi
-    _INGRESS_CACHE=$(printf '%s' "$response" | python3 -c "
+    printf '%s' "$response" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 ingress = data.get('result',{}).get('config',{}).get('ingress',[])
 print(json.dumps(ingress))
-")
-}
-
-# Fetch current tunnel ingress from cache/API.
-# Prints JSON array of ingress rules to stdout.
-_tunnel_get_ingress() {
-    tunnel_ingress_fetch || return 1
-    printf '%s' "$_INGRESS_CACHE"
+"
 }
 
 # Push a full ingress list to the Cloudflare API.
@@ -1190,12 +1188,16 @@ _tunnel_put_ingress() {
         error "Failed to update tunnel config: $(cf_api_error "$response")"
         return 1
     fi
+    tunnel_ingress_reset_cache
     printf '%s' "$response"
 }
 
 yaml_list_ingress() {
     local ingress
-    ingress=$(_tunnel_get_ingress) || return 1
+    if ! tunnel_ingress_fetch; then
+        return 1
+    fi
+    ingress="$_INGRESS_CACHE"
     printf '%s' "$ingress" | python3 -c "
 import json, sys
 rules = json.load(sys.stdin)

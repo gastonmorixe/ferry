@@ -1229,4 +1229,4 @@ async def text_view(request: Request):
 async def _startup() -> None:
     _start_dataset_refresh_loop()
     await asyncio.to_thread(_ensure_datasets_loaded)
-    await asyncio.to_thread(_refresh_datasets_if_needed_sync, False)
+    # Network refresh runs in the background loop; do not block HTTP readiness on GitHub.

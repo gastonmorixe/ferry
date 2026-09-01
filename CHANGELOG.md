@@ -7,6 +7,8 @@ All notable changes to Ferry are documented here.
 ### Fixed
 - **`ferry login` permission probe:** Split tunnel checks into **Tunnel:Read** (list) and **Tunnel:Edit** (read tunnel configuration). Zone-scoped tokens that could list an empty tunnel set no longer pass as fully authorized.
 - **`ferry status` ingress errors:** Tunnel config API failures show one actionable warning instead of repeated raw `ERROR: [{'code':…}]` lines. Ingress is fetched once per status run and cached for app routing checks.
+- **Ingress cache + unit tests:** `tunnel_ingress_fetch` delegates to mockable `_tunnel_get_ingress`; cache resets after ingress writes so tests and status stay consistent.
+- **FastAPI generator CI smoke:** Startup no longer blocks HTTP on GitHub IPDB refresh (background loop only), fixing flaky `smoke (fastapi)` timeouts.
 - **macOS generator templates:** `sed -i` in shared helpers now uses a portable `sed_inplace` wrapper (BSD sed requires `-i ''`), fixing `ferry new` on macOS.
 
 ### Changed
