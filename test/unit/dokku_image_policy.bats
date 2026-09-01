@@ -35,6 +35,22 @@ setup() {
     assert_failure
 }
 
-@test "Ferry release version is 0.12.5" {
-    assert_equal "$FERRY_VERSION" "0.12.5"
+@test "Ferry release version is 0.12.6" {
+    assert_equal "$FERRY_VERSION" "0.12.6"
+}
+
+@test "ferry clears Dokku global VHOST during health wait" {
+    run grep -F 'dokku_ensure_no_global_vhost' "$FERRY_ROOT/ferry.sh"
+    assert_success
+
+    run grep -F 'domains:clear-global' "$FERRY_ROOT/ferry.sh"
+    assert_success
+}
+
+@test "ferry deploy removes A/AAAA before tunnel CNAME" {
+    run grep -F 'cf_dns_delete_records_by_type' "$FERRY_ROOT/ferry.sh"
+    assert_success
+
+    run grep -F 'cf_dns_delete_records_by_type "$hostname" "A"' "$FERRY_ROOT/ferry.sh"
+    assert_success
 }

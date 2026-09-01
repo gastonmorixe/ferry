@@ -2,6 +2,18 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.12.6] - 2026-09-01
+
+### Fixed
+- **DNS cutover from legacy A records:** `ferry deploy` now deletes conflicting `A` / `AAAA` records before creating the proxied tunnel CNAME. Fixes production cutovers where apex domains still pointed at a retired VPS instead of `<tunnel-id>.cfargotunnel.com`.
+- **Global VHOST regression:** `ferry reload` / `dokku_wait_healthy` clears Dokku global VHOST when present. Old Ferry compose seeded a default domain via `hostname:` / `DOKKU_HOSTNAME`; that persisted on `dokku-data` and broke multi-app hosts after upgrades.
+
+### Docs
+- [docs/deploying-apps.md](docs/deploying-apps.md): production domain cutover (tunnel DNS + Dokku domains + ingress).
+- [docs/troubleshooting.md](docs/troubleshooting.md): global VHOST leftovers, DNS A→CNAME migration, Dokku plugins lost on recreate, SSH `IdentityFile` / host alias.
+- [docs/initial-setup.md](docs/initial-setup.md): optional `dokku-postgres` plugin bootstrap, no global VHOST policy.
+- [docs/architecture.md](docs/architecture.md): Dokku plugins vs `dokku-data` persistence.
+
 ## [0.12.5] - 2026-08-31
 
 ### Changed

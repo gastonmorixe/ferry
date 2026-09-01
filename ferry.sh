@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.12.5"
+FERRY_VERSION="0.12.6"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -1404,13 +1404,55 @@ cf_resolve_zone_id() {
     return 1
 }
 
+
+cf_dns_delete_records_by_type() {
+    # Delete all DNS records of a given type for hostname (e.g. A before CNAME cutover)
+    local hostname="$1"
+    local record_type="$2"
+
+    local zone_id
+    zone_id=$(cf_resolve_zone_id "$hostname") || return 1
+
+    local response
+    response=$(cf_api GET "/zones/${zone_id}/dns_records?type=${record_type}&name=${hostname}")
+
+    if ! cf_api_ok "$response"; then
+        error "Failed to query ${record_type} records for '$hostname': $(cf_api_error "$response")"
+        return 1
+    fi
+
+    local record_ids
+    record_ids=$(echo "$response" | jq -r '.result[].id // empty')
+
+    if [[ -z "$record_ids" ]]; then
+        return 0
+    fi
+
+    local record_id
+    while IFS= read -r record_id; do
+        [[ -z "$record_id" ]] && continue
+        local del_response
+        del_response=$(cf_api DELETE "/zones/${zone_id}/dns_records/${record_id}")
+        if ! cf_api_ok "$del_response"; then
+            error "Failed to delete ${record_type} record ${record_id}: $(cf_api_error "$del_response")"
+            return 1
+        fi
+        dim "Removed ${record_type} record for ${hostname}"
+    done <<< "$record_ids"
+    return 0
+}
+
 cf_dns_create_cname() {
-    # Create a proxied CNAME record pointing hostname to the tunnel
+    # Create a proxied CNAME record pointing hostname to the tunnel.
+    # Removes conflicting A/AAAA records first (common on DO→tunnel cutover).
     local hostname="$1"
     local tunnel_target="${TUNNEL_ID}.cfargotunnel.com"
 
     local zone_id
     zone_id=$(cf_resolve_zone_id "$hostname") || return 1
+
+    cf_dns_delete_records_by_type "$hostname" "A" || return 1
+    cf_dns_delete_records_by_type "$hostname" "AAAA" || return 1
 
     local body
     body=$(jq -n \
@@ -1581,9 +1623,27 @@ _probe_container_dns() {
 # Cloudflared Operations
 ###############################################################################
 
+
+dokku_ensure_no_global_vhost() {
+    # Multi-app hosts must not pin a global default domain. Old Ferry compose
+    # seeded beta.example.com via DOKKU_HOSTNAME/hostname; clear if present.
+    if ! docker inspect dokku >/dev/null 2>&1; then
+        return 0
+    fi
+    local report enabled globals
+    report=$(dokku_cmd domains:report --global 2>/dev/null) || return 0
+    enabled=$(echo "$report" | awk -F: '/Domains global enabled:/ {gsub(/^[ 	]+/,"",$2); print $2}')
+    globals=$(echo "$report" | awk -F: '/Domains global vhosts:/ {gsub(/^[ 	]+/,"",$2); print $2}')
+    if [[ "$enabled" == "true" ]] || [[ -n "$globals" ]]; then
+        warn "Clearing Dokku global VHOST (was: ${globals:-enabled})"
+        dokku_cmd domains:clear-global >/dev/null 2>&1 || true
+    fi
+}
+
 dokku_wait_healthy() {
     local attempts=0
     local max_attempts=60
+    dokku_ensure_no_global_vhost
     info "Waiting for Dokku readiness (nginx :80 + /_dokku/health)..."
     while ((attempts < max_attempts)); do
         local status

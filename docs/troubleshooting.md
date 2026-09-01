@@ -61,6 +61,59 @@ App data survives container recreation because it's on the `dokku-data` volume.
 
 ## DNS Issues
 
+### Production cutover: domain still hits the old server
+
+**Symptom:** After `ferry deploy` with a production hostname, Cloudflare DNS still shows an `A` or `AAAA` record pointing at a retired VPS IP. The tunnel ingress is correct but traffic never reaches Ferry.
+
+**Cause:** `ferry deploy` creates a proxied CNAME to `<tunnel-id>.cfargotunnel.com`. Cloudflare cannot have both an apex `A` and a `CNAME` for the same name. Older setups often left apex `A` records in place.
+
+**Fix (Ferry ≥ 0.12.6):** Re-run deploy DNS for the hostname — Ferry deletes conflicting `A` / `AAAA` records before creating the CNAME:
+
+```bash
+ferry deploy myapp -H example.com --no-push -y
+```
+
+**Manual fix:** In Cloudflare DNS, delete the `A` / `AAAA` records for the hostname, then add (or keep) a proxied CNAME to `<tunnel-id>.cfargotunnel.com`. Proxied apex records use Cloudflare CNAME flattening.
+
+Verify:
+
+```bash
+dig +short example.com
+curl -sI https://example.com | head -5
+```
+
+### Dokku global VHOST reappeared
+
+**Symptom:** `dokku domains:report --global` shows `Domains global enabled: true` and a stale hostname after a Ferry / Dokku upgrade.
+
+**Cause:** Ferry ≤ 0.12.4 compose set `hostname:` / `DOKKU_HOSTNAME`, which seeded `/home/dokku/VHOST` on the `dokku-data` volume. Recreating the Dokku container does **not** clear that file. Multi-app hosts must not have a global default domain.
+
+**Fix:**
+
+```bash
+docker exec dokku dokku domains:clear-global
+docker exec dokku dokku domains:report --global
+```
+
+Ferry ≥ 0.12.6 runs this automatically during `ferry reload` / `dokku_wait_healthy`. If you upgraded in place, clear once manually, then pull Ferry 0.12.6+ on the host.
+
+**Prevention:** Do not set `DOKKU_HOSTNAME` in compose. Use per-app `dokku domains:set` / `ferry deploy -H` only.
+
+### Dokku plugins missing after container recreate
+
+**Symptom:** After `docker compose up -d --force-recreate dokku`, commands like `dokku postgres:info` fail with "plugin not installed", even though app data on `dokku-data` survived.
+
+**Cause:** Dokku **plugins** live in the container image filesystem, not on `dokku-data`. Only app git repos, config, nginx, and SSH keys persist across recreates.
+
+**Fix:** Reinstall required plugins, then relink services:
+
+```bash
+docker exec dokku dokku plugin:install https://github.com/dokku/dokku-postgres.git
+docker exec dokku dokku postgres:link <service-name> <app>
+```
+
+Document which plugins your host needs in your runbook. Ferry does not auto-install community plugins yet.
+
 Ferry inherits the host's DNS configuration by default — no `dns:` override in `docker-compose.yml`. Whatever resolver the host uses (router via DHCP, systemd-resolved, NextDNS, Pi-hole, corporate) is automatically used inside the `cloudflared` and `dokku` containers via Docker's embedded DNS at `127.0.0.11`. This works for almost every setup without further configuration.
 
 ### Diagnose first
@@ -317,6 +370,31 @@ dokku ssh-keys:list
 # Test SSH connection
 ssh -i ~/.ssh/id_ed25519 -p 3022 dokku@localhost
 ```
+
+### Permission denied when using bare `dokku@<ip>:3022`
+
+**Symptom:** `ssh -p 3022 dokku@192.168.1.149` returns `Permission denied (publickey)`, but deploys worked before.
+
+**Cause:** OpenSSH only applies `IdentityFile` from a matching `Host` block in `~/.ssh/config`. A bare IP skips your `Host dokku-proxmox` entry, so the wrong keys are offered.
+
+**Fix:** Use the SSH config alias (recommended):
+
+```bash
+# ~/.ssh/config
+Host dokku-proxmox
+    HostName 192.168.1.149
+    Port 3022
+    User dokku
+    IdentityFile ~/.ssh/dokku-proxmox
+    IdentitiesOnly yes
+
+ssh dokku-proxmox version
+git remote add myapp dokku-proxmox:myapp
+```
+
+Or pass the key explicitly: `ssh -i ~/.ssh/dokku-proxmox -p 3022 dokku@192.168.1.149 version`
+
+Keys on the server (`dokku ssh-keys:list`) are unchanged — this is almost always a client-side `IdentityFile` issue.
 
 ### Host key verification failed
 

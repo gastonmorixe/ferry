@@ -102,6 +102,58 @@ git push dokku main:master
 
 Dokku always deploys from the `master` branch. If your local branch is `main`, use `main:master`.
 
+
+## Promoting production domains (tunnel cutover)
+
+Use this when moving a live site from a retired VPS (e.g. DigitalOcean) to Ferry on a new host. Example: `multifiesta.com.uy` + `www.multifiesta.com.uy` → Dokku app `mf-www2` on Proxmox.
+
+### 1. Add domains to the Dokku app
+
+```bash
+dokku domains:add mf-www2 multifiesta.com.uy
+dokku domains:add mf-www2 www.multifiesta.com.uy
+dokku nginx:build-config mf-www2 --parallel
+```
+
+Keep staging hostnames (e.g. `www2.example.com`) until you verify production.
+
+### 2. Update tunnel ingress
+
+Ferry manages ingress via the Cloudflare Tunnel config API. Add each hostname with `ferry deploy` (infrastructure only):
+
+```bash
+ferry deploy mf-www2 -H multifiesta.com.uy --no-push -y
+ferry deploy mf-www2 -H www.multifiesta.com.uy --no-push -y
+```
+
+Or add rules manually in the Cloudflare Zero Trust dashboard for the host tunnel. Every app rule points to `http://dokku:80`; Dokku nginx routes by `Host` header.
+
+### 3. Switch Cloudflare DNS to the tunnel
+
+**Ferry ≥ 0.12.6** deletes conflicting `A` / `AAAA` records before creating the proxied CNAME to `<tunnel-id>.cfargotunnel.com`.
+
+Verify in Cloudflare DNS:
+
+| Name | Type | Target | Proxy |
+| --- | --- | --- | --- |
+| `multifiesta.com.uy` | CNAME | `<tunnel-id>.cfargotunnel.com` | Proxied |
+| `www.multifiesta.com.uy` | CNAME | `<tunnel-id>.cfargotunnel.com` | Proxied |
+
+No apex `A` record should remain pointing at the old VPS IP.
+
+### 4. Smoke test
+
+```bash
+curl -sI https://multifiesta.com.uy | head -5
+curl -sI https://www.multifiesta.com.uy | head -5
+docker exec dokku curl -sI -H 'Host: multifiesta.com.uy' http://127.0.0.1/ | head -5
+```
+
+### 5. No global Dokku VHOST
+
+Multi-app Ferry hosts must **not** set a global default domain. If `dokku domains:report --global` shows a stale hostname after upgrade, run `dokku domains:clear-global` once. Ferry 0.12.6+ clears this during `ferry reload`.
+
+
 ## Updating an Existing App
 
 Just push again:

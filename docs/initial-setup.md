@@ -148,6 +148,30 @@ You can run `ferry login` before or after `compose up`. If cloudflared is alread
 docker compose exec -T dokku dokku ssh-keys:add admin < ~/.ssh/id_ed25519.pub
 ```
 
+## Step 8b: Install Dokku plugins (optional, recommended)
+
+Community Dokku plugins (e.g. `dokku-postgres`) are **not** stored on `dokku-data`. They live in the Dokku container filesystem and are lost when the container is recreated. Install what your apps need after first boot:
+
+```bash
+docker compose exec -T dokku dokku plugin:install https://github.com/dokku/dokku-postgres.git
+# example: create + link a database
+# dokku postgres:create myapp-db
+# dokku postgres:link myapp-db myapp
+```
+
+Re-run plugin install after any `docker compose up -d --force-recreate dokku`.
+
+### No global Dokku VHOST
+
+Ferry does **not** set a global default domain. Each app gets its own hostnames via `dokku domains:set` / `ferry deploy -H`. If upgrading from Ferry ≤ 0.12.4, clear any leftover global VHOST once:
+
+```bash
+docker compose exec -T dokku dokku domains:clear-global
+```
+
+Ferry ≥ 0.12.6 clears global VHOST automatically during `ferry reload`.
+
+
 ## Step 8: Configure Dokku Networking
 
 Dokku deploys app containers on the default `bridge` network, but Dokku's nginx runs on the `webserver` network. They can't reach each other by default.

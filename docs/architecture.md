@@ -74,6 +74,19 @@ All Dokku state is persisted in the `dokku-data` Docker volume, mounted at `/mnt
 
 This means `docker compose down && docker compose up -d` preserves everything. You can even recreate the Dokku container and all apps/settings survive.
 
+### What persists vs what does not
+
+| Stored on `dokku-data` volume | Lost on Dokku container recreate |
+| --- | --- |
+| App git repos, env, domains, nginx configs | Dokku **plugins** (postgres, redis, etc.) |
+| SSH `authorized_keys`, deploy locks | Plugin binaries under `/var/lib/dokku/plugins` |
+| Global/domain plugin config tied to apps | Anything only installed with `plugin:install` |
+
+After recreating the `dokku` service, reinstall required plugins and re-link databases. App containers and volumes on the host Docker engine survive.
+
+Ferry compose does **not** set a global Dokku VHOST. Multi-app hosts route by per-app `server_name` only. Ferry 0.12.6+ runs `domains:clear-global` during health wait if a stale global domain is detected (leftover from Ferry ≤ 0.12.4 `hostname:` / `DOKKU_HOSTNAME` seeding).
+
+
 **To inspect the volume:**
 
 ```bash

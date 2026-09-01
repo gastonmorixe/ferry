@@ -274,7 +274,7 @@ Copy `.env.example` to `.env` to get started.
 
 ### DNS Management
 
-With an API token, Ferry creates and deletes DNS records via the Cloudflare API for any domain in your account. Zone IDs are auto-resolved from hostnames, so no manual configuration is needed.
+With an API token, Ferry creates and deletes DNS records via the Cloudflare API for any domain in your account. When cutting over from a legacy VPS, Ferry removes conflicting apex `A` / `AAAA` records before creating the proxied tunnel CNAME (v0.12.6+). Zone IDs are auto-resolved from hostnames, so no manual configuration is needed.
 
 Without an API token, DNS creation falls back to zone-scoped origin certs via `cloudflared tunnel route dns`, limited to domains with a matching cert file in `tunnels/providers/cloudflare/`.
 
