@@ -58,7 +58,8 @@ dokku
   ├── DNS: inherits host /etc/resolv.conf via Docker embedded resolver
   ├── mem_limit: 256m
   ├── network: webserver
-  ├── env: DOKKU_HOSTNAME, DOKKU_HOST_ROOT, DOKKU_LIB_HOST_ROOT
+  ├── env: DOKKU_HOST_ROOT, DOKKU_LIB_HOST_ROOT
+  ├── healthcheck: nginx :80 listening + /_dokku/health (domain-free)
   └── restart: unless-stopped
 ```
 

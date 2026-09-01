@@ -45,7 +45,7 @@ docker compose up -d dokku
 ./ferry.sh reload -y
 ```
 
-Ferry's compose healthcheck verifies nginx `:80` with a **Host header** (`FERRY_HEALTHCHECK_HOST` in `.env`, e.g. `beta.example.com`) before cloudflared starts (`depends_on: service_healthy`). Bare `GET /` on `:80` can empty-reply while `:18080/_dokku/health` passes early — do not use `:18080` alone. If you recreate Dokku alone, run `ferry reload` so cloudflared does not serve traffic to a dead origin.
+Ferry's compose healthcheck is **domain-free**: nginx must be listening on `:80`, and Dokku's loopback readiness endpoint (`http://127.0.0.1:18080/_dokku/health`) must return 2xx. cloudflared waits on that (`depends_on: service_healthy`). It does **not** curl an app Host / `/health` path — multi-vhost hosts have no single global domain, and bare `GET /` often empty-replies (nginx 444). If you recreate Dokku alone, run `ferry reload` so cloudflared does not serve traffic to a dead origin.
 
 SSH host keys also regenerate on Dokku recreate. Fix:
 

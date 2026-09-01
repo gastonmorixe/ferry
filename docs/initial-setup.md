@@ -23,7 +23,7 @@ mkdir -p ~/ferry
 cd ~/ferry
 # clone or copy the Ferry repo here, then:
 cp .env.example .env
-# edit .env: set DOKKU_HOSTNAME (leave TUNNEL_ID / TUNNEL_TOKEN blank)
+# edit .env: optional DOKKU_HOSTNAME for deploy defaults (leave TUNNEL_ID / TUNNEL_TOKEN blank)
 
 ferry login
 # optional: ferry login --tunnel-name my-host-tunnel
@@ -102,7 +102,7 @@ The following files were created / expected:
 
 - `docker-compose.yml`: cloudflared + dokku services (`cloudflared` uses `TUNNEL_TOKEN` via `tunnel run`)
 - `tunnels/providers/cloudflare/config.yml`: tunnel ingress rules (gitignored, recovered from Dokku app domains when possible, otherwise generated from TUNNEL_ID)
-- `.env`: `DOKKU_HOSTNAME`, plus `TUNNEL_ID` / `TUNNEL_TOKEN` / `CF_API_TOKEN` / `CF_ACCOUNT_ID` from `ferry login`
+- `.env`: optional `DOKKU_HOSTNAME` (deploy hostname defaults), plus `TUNNEL_ID` / `TUNNEL_TOKEN` / `CF_API_TOKEN` / `CF_ACCOUNT_ID` from `ferry login`
 - `.env.example`: template for .env
 - `.gitignore`: keeps secrets out of git
 - `apps/test-app/`: Node/Express test application

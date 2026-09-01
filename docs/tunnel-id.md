@@ -54,7 +54,7 @@ Without it, Ferry does not know **which** tunnel to attach apps to. There is no 
 
 ### Preferred: `ferry login`
 
-After you copy `.env.example` → `.env` and set `DOKKU_HOSTNAME`, run:
+After you copy `.env.example` → `.env` (optional `DOKKU_HOSTNAME` for deploy defaults), run:
 
 ```bash
 ferry login

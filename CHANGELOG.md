@@ -2,6 +2,15 @@
 
 All notable changes to Ferry are documented here.
 
+## [0.12.5] - 2026-08-31
+
+### Changed
+- **Domain-free Dokku healthcheck:** Compose readiness is `nginx :80 listening` + `GET http://127.0.0.1:18080/_dokku/health`. No Host header, no app vhost, no `FERRY_HEALTHCHECK_HOST`.
+- **No global compose hostname:** Removed `hostname:` / `DOKKU_HOSTNAME` / `FERRY_HEALTHCHECK_HOST` from `docker-compose.yml`. Multi-app hosts are not pinned to one domain. `DOKKU_HOSTNAME` in `.env` is optional and only used as a `ferry deploy` hostname default.
+
+### Docs
+- Troubleshooting and `.env.example` updated for the domain-free health gate.
+
 ## [0.12.4] - 2026-09-01
 
 ### Fixed

@@ -90,7 +90,7 @@ cd ~/ferry
 
 ```bash
 cp .env.example .env
-# Edit .env: set DOKKU_HOSTNAME
+# Optional: DOKKU_HOSTNAME for deploy hostname defaults only
 # Leave TUNNEL_ID / TUNNEL_TOKEN blank — ferry login fills them
 ```
 
@@ -264,7 +264,7 @@ git push dokku main:master
 
 | Variable | Required | Description |
 |---|---|---|
-| `DOKKU_HOSTNAME` | Yes | Base domain for default app hostnames |
+| `DOKKU_HOSTNAME` | No | Optional base domain for `ferry deploy` hostname defaults only (not used by compose/healthcheck) |
 | `TUNNEL_ID` | Auto | Host Cloudflare tunnel UUID (set via `ferry login`) |
 | `TUNNEL_TOKEN` | Auto | Connector token for `cloudflared` (`tunnel run`; set via `ferry login`) |
 | `CF_API_TOKEN` | Auto | Cloudflare API token (set via `ferry login`) |

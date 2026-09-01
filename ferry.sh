@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-FERRY_VERSION="0.12.4"
+FERRY_VERSION="0.12.5"
 ###############################################################################
 # Constants & Config
 ###############################################################################
@@ -1584,7 +1584,7 @@ _probe_container_dns() {
 dokku_wait_healthy() {
     local attempts=0
     local max_attempts=60
-    info "Waiting for Dokku to accept traffic on :80..."
+    info "Waiting for Dokku readiness (nginx :80 + /_dokku/health)..."
     while ((attempts < max_attempts)); do
         local status
         status=$(docker inspect dokku --format '{{.State.Health.Status}}' 2>/dev/null || echo "none")
@@ -3831,7 +3831,7 @@ cmd_help() {
     echo ""
     kv "TUNNEL_ID" "(auto) Host tunnel UUID — set via ferry login"
     kv "TUNNEL_TOKEN" "(auto) Connector token for cloudflared — set via ferry login"
-    kv "DOKKU_HOSTNAME" "(required) Default domain for app hostnames"
+    kv "DOKKU_HOSTNAME" "(optional) Default domain for deploy hostnames only"
     kv "CF_API_TOKEN" "(auto) Set via ferry login"
     kv "CF_ACCOUNT_ID" "(auto) Auto-discovered"
     echo ""

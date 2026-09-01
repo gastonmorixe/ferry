@@ -18,13 +18,9 @@ services:
     # immutable digest in the target BOM immediately before any VM compose apply.
     image: dokku/dokku:latest
     container_name: dokku
-    hostname: ${DOKKU_HOSTNAME:-apps.local}
     environment:
-      DOKKU_HOSTNAME: ${DOKKU_HOSTNAME:-apps.local}
       DOKKU_HOST_ROOT: /var/lib/dokku/home/dokku
       DOKKU_LIB_HOST_ROOT: /var/lib/dokku/var/lib/dokku
-      # Set to a deployed app hostname (e.g. beta.example.com). Healthcheck curls :80 with Host.
-      FERRY_HEALTHCHECK_HOST: ${FERRY_HEALTHCHECK_HOST:-}
     ports:
       - "3022:22"
     volumes:
@@ -33,13 +29,16 @@ services:
     # No pid: host / CAP_SYS_ADMIN by default.
     # Generated apps use HTTP path healthchecks in app.json (see generators/_shared).
     # Dokku's default listening probe may warn without host PID + SYS_ADMIN; that warn is non-fatal.
-    # Healthcheck must prove nginx :80 routes by Host header — bare GET / can empty-reply
-    # while :18080/_dokku/health passes early and lets cloudflared 502 the tunnel.
+    #
+    # Domain-free readiness: prove nginx is listening on :80 AND Dokku's loopback
+    # readiness endpoint answers. Do NOT curl app vhosts / Host headers — a multi-app
+    # host has no single global domain, and bare GET / often empty-replies (nginx 444).
+    # :18080/_dokku/health alone is too early (before nginx binds); require both.
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "if [ -n \"$FERRY_HEALTHCHECK_HOST\" ]; then curl -sf --max-time 3 -H \"Host: $FERRY_HEALTHCHECK_HOST\" http://127.0.0.1/health; else curl -sf --max-time 3 -H \"Host: localhost\" http://127.0.0.1/ && curl -fsS --max-time 3 http://127.0.0.1:18080/_dokku/health; fi",
+          "ss -ltn | grep -qE '[:.]80 ' && curl -fsS --max-time 3 http://127.0.0.1:18080/_dokku/health",
         ]
       interval: 10s
       timeout: 5s
